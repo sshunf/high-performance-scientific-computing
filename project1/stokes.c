@@ -1,3 +1,10 @@
+/*
+Shun Fujita
+ESAPPM 344 - Spring 2025, Project 1
+
+SOR Method to solve stokes flow
+*/
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
@@ -14,21 +21,21 @@ int main(int argc, char* argv[]) {
 	}
 
 	int N = atoi(argv[1]);
-	int mu = atoi(argv[2]);
-	int P = atoi(argv[3]);
+	double mu = atof(argv[2]);
+	double P = atof(argv[3]);
 	double omega = atof(argv[4]);
 	double tol = atof(argv[5]);
 	int K = atoi(argv[6]);
 
 	printf("N: %d\n", N);
-	printf("mu: %d\n", mu);
-	printf("P: %d\n", P);
+	printf("mu: %.2f\n", mu);
+	printf("P: %.2f\n", P);
 	printf("omega: %.2f\n", omega);
 	printf("tol: %.10f\n", tol);
 	printf("K: %d\n", K);
 	
 	double dx, dy;
-	dx = dy	= 1.0 / (N-1.0);
+	dx = dy	= 1.0 / (N-1);
 
 	// allocate memory for the x,y velocities and pressure
 	// use calloc to initialize memory of u and v to 0
@@ -36,20 +43,13 @@ int main(int argc, char* argv[]) {
 	double (*v)[N] = calloc(N-1, sizeof(*v)); // (N-1) x N
 	double (*p)[N-1] = calloc(N-1, sizeof(*p)); // (N-1) x (N-1)
 	
-
-	// apply boundary conditions TODO: check if we need this
-	for (int k = 0; k < N-1; ++k){
-		p[0][k] = P;
-		p[N-2][k] = 0.0;
-	}
-
 	double max_residual = 0.0;
 	double u_res, v_res, p_res;
 
 	// beginning of SOR
 	for (int i = 0; i < K; ++i) {
 		
-		// udpate the u values
+		/** udpate the u values **/ 
 
 		// update bottom left
 		u_res = mu * (
@@ -81,7 +81,7 @@ int main(int argc, char* argv[]) {
 			+ u[1][N-2]
 			+ u[0][N-3]
 		  )
-		- 2*dy*(p[1][N-2] - p[0][N-2]);
+		- 2*dy*(p[0][N-2] - P);
 		
 		 // update bottom row
 		for (int j = 1; j < N-1; ++j) {
@@ -140,7 +140,7 @@ int main(int argc, char* argv[]) {
 				+ u[N-1][k-1]
 				+ u[N-1][k+1]
 			)
-			- dy * (p[N-1][k] - p[N-2][k]);
+			+ 2 * dy * (p[N-2][k]); // TODO: check this
 			u[N-1][k] += omega * u_res;
 			max_residual = max(u_res, max_residual);	
 		}
@@ -151,23 +151,14 @@ int main(int argc, char* argv[]) {
 			+ u[N-2][N-2]
 			+ u[N-1][N-3]
 		  )
-		- dy * (p[N-1][N-2] - p[N-2][N-2]);
+		+ 2 * dy * (p[N-2][N-2]);
 		u[N-1][N-2] += omega * u_res;
 		max_residual = max(u_res, max_residual);
 
 
-		// update the v values
+		/** update v values **/
 
-		// update bottom left TODO: check if these are right
-		// v_res = mu * (
-		// 	-3*v[0][0]
-		// 	+ v[1][0]
-		// 	+ v[0][1]
-		// )
-		// - 2 * dx * (p[0][0] - P);
-
-		// v[0][0] += omega*v_res;
-		// max_residual = max(u_res, max_residual);
+		// update bottom left
 		v[0][0] = 0;
 		
 		// update left side
@@ -184,29 +175,10 @@ int main(int argc, char* argv[]) {
 		}
 
 		// update top left
-		// v_res = mu * (
-		// 	-3*v[0][N-1]
-		// 	+ v[1][N-1]
-		// 	+ v[0][N-2]
-		// )
-		// - dx * 2 * (p[0][N-1] - P);
-
-		// v[0][N-2] += omega*v_res;
-		// max_residual = max(v_res, max_residual);
-		v[0][N-2] = 0;
+		v[0][N-1] = 0; // N-1 for y direction
 
 		for (int j = 1; j < N-2; ++j) {
 			// update bottom
-			// v_res = mu * (
-			// 	-3*v[j][0]
-			// 	+ v[j-1][0]
-			// 	+ v[j+1][0]
-			// 	+ v[j][1]
-			// )
-			// - dx * 2 * (p[j][0] - P);
-
-			// v[j][0] += omega*v_res;
-			// max_residual = max(v_res, max_residual);	
 			v[j][0] = 0;
 
 			// update interior
@@ -225,16 +197,6 @@ int main(int argc, char* argv[]) {
 			}
 
 			// update top
-			// v_res = mu * (
-			// 	-3*v[j][N-1]
-			// 	+ v[j-1][N-1]
-			// 	+ v[j+1][N-1]
-			// 	+ v[j][N-1]
-			// )
-			// - dx * (v[j][N-1] - v[j][N-2]);
-
-			// v[j][N-1] += omega*v_res;
-			// max_residual = max(v_res, max_residual);
 			v[j][N-1] = 0;
 		}
 
@@ -258,38 +220,24 @@ int main(int argc, char* argv[]) {
 		// update top right
 		v[N-2][N-1] = 0;
 
-		// boundary conditions
-		for(int j = 0; j < N; ++j){
-			v[0  ][j] = 0.0;
-			v[N-2][j] = 0.0;
-		}
-		for(int k = 0; k < N-1; ++k){
-			v[k][0]   = v[k][1];
-			v[k][N-1] = v[k][N-2];
-		}
 
-		// update the p values
+		/** update p values **/
 
 		// update bottom left
-		p_res = mu * (
-			- (u[1][0] - u[0][0])
-			- (v[0][1] - v[0][0])
-		);
-		// p_res = 2 * P - p[1][0] - p[0][0];
+		p_res = - (u[1][0] - u[0][0]) - (v[0][1] - v[0][0]);
 
 		p[0][0] += omega*p_res;
 		max_residual = max(p_res, max_residual);
 
 		// update the left values
 		for (int k = 1; k < N-2; ++k) {
-			p_res = 2 * P - p[1][k] - p[0][k];
-
+			p_res = -(u[1][k] - u[0][k]) - (v[0][k+1] - v[0][k]);
 			p[0][k] += omega*p_res;
 			max_residual = max(p_res, max_residual);
 		}
 
 		// update the top left
-		p_res = 2 * P - p[1][N-2] - p[0][N-2];
+		p_res = -(u[1][N-2] - u[0][N-2]) - (v[0][N-1] - v[0][N-2]);
 
 		p[0][N-2] += omega*p_res;
 		max_residual = max(p_res, max_residual);
@@ -304,8 +252,7 @@ int main(int argc, char* argv[]) {
 
 			// interior
 			for (int k = 1; k < N-2; ++k) {
-				p_res = -(u[j+1][k] - u[j][k])
-					- (v[j][k+1] - v[j][k]);
+				p_res = -(u[j+1][k] - u[j][k]) - (v[j][k+1] - v[j][k]);
 
 				p[j][k] += omega*p_res;
 				max_residual = max(p_res, max_residual);
@@ -321,48 +268,40 @@ int main(int argc, char* argv[]) {
 		// update bottom right
 		p_res = -(u[N-1][0] - u[N-2][0]) - (v[N-2][1] - v[N-2][0]);
 
-		p[N-2][N-2] += omega*p_res;
+		p[N-2][0] += omega*p_res;
 		max_residual = max(p_res, max_residual);	
 
 		// update right side
 		for (int k = 1; k < N-2; ++k) {
-			p_res = -(u[N-1][0] - u[N-2][0]) - (v[N-2][1] - v[N-2][0]);
+			p_res = 2*u[N-2][0] - (v[N-2][1] - v[N-2][0]);
 
 			p[N-2][k] += omega*p_res;
 			max_residual = max(p_res, max_residual);
 		}
 
 		// update top right
-		p_res = -(u[N-1][N-2] - u[N-2][N-2]) - (v[N-2][N-1] - v[N-2][N-2]);
+		p_res = 2*u[N-2][N-2] - (v[N-2][N-1] - v[N-2][N-2]);
 
 		p[N-2][N-2] += omega*p_res;
 		max_residual = max(p_res, max_residual);	
 
-		// TODO: Check if we need to apply BCs here
-		for (int j = 0; j < N; ++j) {
-			u[j][0] = 0.0;
-			u[j][N-2] = 0.0;
+
+		// debugging print
+		if (i % 100 == 0) {
+			printf("max residual at iteration %d: %f\n", i, max_residual);
 		}
 
-		for (int j = 0; j < N-1; ++j) {
-			v[j][0] = 0.0;
-			v[j][N-1] = 0.0;
-		}
-
-		for(int j = 0; j < N; ++j){
-			v[0][j] = 0.0;
-			v[N-2][j] = 0.0;
-		}
-
-		for (int k = 0; k < N-1; k++) {
-			p[0][k] = P;
-			p[N-2][k] = 0;
-		}
-		
 		// break when we are within tolerance
 		if (max_residual < tol) {
 			printf("number of iterations: %d\n", i);
 			break;
+		}
+	}
+
+	// print out u
+	for (int j = 0; j < N-1; ++j) {
+		for (int k = 0; k < N-2; ++k) {
+			printf("%f\n", u[j][k]);
 		}
 	}
 
