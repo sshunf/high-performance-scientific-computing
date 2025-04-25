@@ -2,7 +2,7 @@
 Shun Fujita
 ESAPPM 344 - Spring 2025, Project 1
 
-SOR Method to solve stokes flow
+SOR Method to solve stokes flow, using OpenMP
 */
 
 #include <stdio.h>
