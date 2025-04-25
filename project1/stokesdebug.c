@@ -43,7 +43,7 @@ int main(int argc, char* argv[]) {
 	double (*v)[N] = calloc(N-1, sizeof(*v)); // (N-1) x N
 	double (*p)[N-1] = calloc(N-1, sizeof(*p)); // (N-1) x (N-1)
 	
-	double max_residual = 0.0;
+	double max_residual = 0.0; // reset residuals here
 	double u_res = 0.0, v_res = 0.0, p_res = 0.0;
 
 	// beginning of SOR
@@ -61,6 +61,7 @@ int main(int argc, char* argv[]) {
 
 		u[0][0] += omega*u_res;
 		max_residual = max(u_res, max_residual);
+		printf("max residual u iter %d: %f\n", i, max_residual);
 
 		// update left side (inlet)
 		for(int k = 1; k < N-2; ++k) {
@@ -73,6 +74,7 @@ int main(int argc, char* argv[]) {
 					- 2*dy*(p[0][k] - P);
 			u[0][k] += omega*u_res;
 			max_residual = max(u_res, max_residual);
+			printf("max residual u: %f\n", max_residual);
 		}
 
 		// update top left
@@ -85,6 +87,7 @@ int main(int argc, char* argv[]) {
 
 		u[0][N-2] += omega*u_res; // fixed: previously did not update
 		max_residual = max(u_res, max_residual);
+		printf("max residual u: %f\n", max_residual);
 
 		 // update bottom row
 		for (int j = 1; j < N-1; ++j) {
@@ -97,6 +100,7 @@ int main(int argc, char* argv[]) {
 			- dy * (p[j][0] - p[j-1][0]);
 			u[j][0] += omega*u_res; 
 			max_residual = max(u_res, max_residual);
+			printf("max residual u: %f\n", max_residual);
 			
 			 // update interior
 			for (int k = 1; k < N-2; ++k) {
@@ -111,6 +115,7 @@ int main(int argc, char* argv[]) {
 
 				u[j][k] += omega*u_res;
 				max_residual = max(u_res, max_residual);
+				printf("max residual u: %f\n", max_residual);
 			}
 
 			// update top row
@@ -123,6 +128,7 @@ int main(int argc, char* argv[]) {
 			- dy * (p[j][N-2] - p[j-1][N-2]);
 			u[j][N-2] += omega * u_res; 
 			max_residual = max(u_res, max_residual);
+			printf("max residual u: %f\n", max_residual);
 		}
 
 		// update bottom right
@@ -134,6 +140,7 @@ int main(int argc, char* argv[]) {
 		+ 2 * dy * (p[N-2][0]); // fixed this
 		u[N-1][0] += omega * u_res;
 		max_residual = max(u_res, max_residual);
+		printf("max residual u: %f\n", max_residual);
 
 		 // update right side (outlet)
 		for (int k = 1; k < N-2; ++k) {
@@ -146,6 +153,7 @@ int main(int argc, char* argv[]) {
 			+ 2 * dy * (p[N-2][k]);
 			u[N-1][k] += omega * u_res;
 			max_residual = max(u_res, max_residual);
+			printf("max residual u: %f\n", max_residual);
 		}
 
 		// update top right
@@ -157,6 +165,7 @@ int main(int argc, char* argv[]) {
 		+ 2 * dy * (p[N-2][N-2]);
 		u[N-1][N-2] += omega * u_res;
 		max_residual = max(u_res, max_residual);
+		printf("max residual u: %f\n", max_residual);
 
 
 		/** update v values **/
@@ -175,6 +184,7 @@ int main(int argc, char* argv[]) {
 			- dx * (p[0][k] - p[0][k-1]);
 			v[0][k] += omega*v_res;
 			max_residual = max(v_res, max_residual);
+			printf("max residual v iter %d: %f\n", i, max_residual);
 		}
 
 		// update top left
@@ -197,6 +207,7 @@ int main(int argc, char* argv[]) {
 
 				v[j][k] += omega*v_res; 
 				max_residual = max(v_res, max_residual);
+				printf("max residual v: %f\n", max_residual);
 			}
 
 			// update top
@@ -218,6 +229,7 @@ int main(int argc, char* argv[]) {
 
 			v[N-2][k] += omega*v_res;
 			max_residual = max(v_res, max_residual);
+			printf("max residual v: %f\n", max_residual);
 		}
 
 		// update top right
@@ -231,12 +243,14 @@ int main(int argc, char* argv[]) {
 
 		p[0][0] += omega*p_res;
 		max_residual = max(p_res, max_residual);
+		printf("max residual p iter %d: %f\n", i, max_residual);
 
 		// update the left values
 		for (int k = 1; k < N-2; ++k) {
 			p_res = -(u[1][k] - u[0][k]) - (v[0][k+1] - v[0][k]);
 			p[0][k] += omega*p_res;
 			max_residual = max(p_res, max_residual);
+			printf("max residual p: %f\n", max_residual);
 		}
 
 		// update the top left
@@ -244,6 +258,7 @@ int main(int argc, char* argv[]) {
 
 		p[0][N-2] += omega*p_res;
 		max_residual = max(p_res, max_residual);
+		printf("max residual p: %f\n", max_residual);
 
 		// update the interior
 		for (int j = 1; j < N-2; ++j) {
@@ -252,6 +267,7 @@ int main(int argc, char* argv[]) {
 
 			p[j][0] += omega*p_res;
 			max_residual = max(p_res, max_residual);	
+			printf("max residual p: %f\n", max_residual);
 
 			// interior
 			for (int k = 1; k < N-2; ++k) {
@@ -259,6 +275,7 @@ int main(int argc, char* argv[]) {
 
 				p[j][k] += omega*p_res;
 				max_residual = max(p_res, max_residual);
+				printf("max residual p: %f\n", max_residual);
 			}
 
 			// update the top
@@ -266,13 +283,15 @@ int main(int argc, char* argv[]) {
 
 			p[j][N-2] += omega*p_res;
 			max_residual = max(p_res, max_residual);
+			printf("max residual p: %f\n", max_residual);
 		}
 
 		// update bottom right
 		p_res = -(u[N-1][0] - u[N-2][0]) - (v[N-2][1] - v[N-2][0]);
 
 		p[N-2][0] += omega*p_res;
-		max_residual = max(p_res, max_residual);	
+		max_residual = max(p_res, max_residual);
+		printf("max residual p: %f\n", max_residual);
 
 		// update right side
 		for (int k = 1; k < N-2; ++k) {
@@ -280,13 +299,15 @@ int main(int argc, char* argv[]) {
 
 			p[N-2][k] += omega*p_res;
 			max_residual = max(p_res, max_residual);
+			printf("max residual p: %f\n", max_residual);
 		}
 
 		// update top right
 		p_res = 2*u[N-2][N-2] - (v[N-2][N-1] - v[N-2][N-2]);
 
 		p[N-2][N-2] += omega*p_res;
-		max_residual = max(p_res, max_residual);
+		max_residual = max(p_res, max_residual);	
+		printf("max residual p: %f\n", max_residual);
 
 
 		// debugging print
@@ -305,16 +326,16 @@ int main(int argc, char* argv[]) {
 	printf("u: \n");
 	for (int j = 0; j < N-1; ++j) {
 		for (int k = 0; k < N-2; ++k) {
-			printf("%.3f, ", u[j][k]);
+			printf("%.2f", u[j][k]);
 		}
 		printf("\n");
 	}
 
-	// // print out v 
+	// print out v 
 	// printf("v: \n");
 	// for (int j = 0; j < N-2; ++j) {
 	// 	for (int k = 0; k < N-1; ++k) {
-	// 		printf("%.3f, ", v[j][k]);
+	// 		printf("%f", v[j][k]);
 	// 	}
 	// 	printf("\n");
 	// }
@@ -323,7 +344,7 @@ int main(int argc, char* argv[]) {
 	printf("p: \n");
 	for (int j = 0; j < N-2; ++j) {
 		for (int k = 0; k < N-2; ++k) {
-			printf("%.3f, ", p[j][k]);
+			printf("%.2f", p[j][k]);
 		}
 		printf("\n");
 	}
