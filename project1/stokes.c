@@ -358,6 +358,10 @@ int main(int argc, char* argv[]) {
 	fwrite(p, sizeof(double), (N-1)*(N-1), fP);
 	fclose(fP);
 
+	FILE *fs = fopen("scaling_data.txt","a");
+	fprintf(fs, "%d %g\n", N, cpu_time_used);
+    fclose(fs);
+
 	free(u);
 	free(v);
 	free(p);

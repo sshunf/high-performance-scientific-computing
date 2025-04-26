@@ -2,17 +2,14 @@
 Shun Fujita
 ESAPPM 344 - Spring 2025, Project 1
 
-SOR Method to solve stokes flow, using OpenMP
+SOR Method to solve stokes flow
 */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
 #include <time.h>
-
-static inline double max(double a, double b) {
-	return (fabs(a) > b) ? fabs(a) : b;
-}
+#include <omp.h>
 
 int main(int argc, char* argv[]) {
 	// check number of arguments
@@ -58,252 +55,202 @@ int main(int argc, char* argv[]) {
 	start = clock();
 
 	// beginning of SOR
+	#pragma omp parallel shared(u, v, p, finished, max_residual) private(u_res, v_res, p_res)
 	for (int i = 0; i < K; ++i) {
 		max_residual = 0.0;
+
 		/** udpate the u values **/ 
+		// black pass for left boundary
+		#pragma omp for
+		for (int k=0;k<N-1; k+=2) {
+			if (k == 0) { // bottom left
+				u_res = mu * (-4*u[0][0] + u[1][0] + u[0][1]) - 2*dy*(p[0][0] - P);
+			}
+			else if (k == N-2) { // top left
+				u_res = mu * (-4*u[0][N-2] + u[1][N-2] + u[0][N-3]) - 2*dy*(p[0][N-2] - P);
+			}
+			else { // interior
+				u_res = mu * (-3*u[0][k] + u[1][k] + u[0][k-1] + u[0][k+1]) - 2*dy*(p[0][k] - P);
+			}
 
-		// update bottom left
-		u_res = mu * (
-            -4*u[0][0]
-            + u[1][0]
-            + u[0][1]
-          )
-        - 2*dy*(p[0][0] - P);
-
-		u[0][0] += omega*u_res;
-		max_residual = max(u_res, max_residual);
-
-		// update left side (inlet)
-		for(int k = 1; k < N-2; ++k) {
-			u_res = mu * (
-						-3*u[0][k]
-						+ u[1][k]
-						+ u[0][k-1]
-						+ u[0][k+1]
-					)
-					- 2*dy*(p[0][k] - P);
 			u[0][k] += omega*u_res;
-			max_residual = max(u_res, max_residual);
+			max_residual = fmax(max_residual, fabs(u_res));
 		}
-
-		// update top left
-		u_res = mu * (
-			-4*u[0][N-2]
-			+ u[1][N-2]
-			+ u[0][N-3]
-		  )
-		- 2*dy*(p[0][N-2] - P);
-
-		u[0][N-2] += omega*u_res; // fixed: previously did not update
-		max_residual = max(u_res, max_residual);
-
-		 // update bottom row
-		for (int j = 1; j < N-1; ++j) {
-			u_res = mu * (
-				-5*u[j][0]
-				+ u[j-1][0]
-				+ u[j][1]
-				+ u[j+1][0]
-			)
-			- dy * (p[j][0] - p[j-1][0]);
-			u[j][0] += omega*u_res; 
-			max_residual = max(u_res, max_residual);
-			
-			 // update interior
-			for (int k = 1; k < N-2; ++k) {
-				u_res = mu * (
-					- 4*u[j][k]
-					+ u[j-1][k]
-					+ u[j+1][k]
-					+ u[j][k-1]
-					+ u[j][k+1]
-				)
-				- dy * (p[j][k] - p[j-1][k]);
-
-				u[j][k] += omega*u_res;
-				max_residual = max(u_res, max_residual);
-			}
-
-			// update top row
-			u_res = mu * (
-				-5*u[j][N-2]
-				+ u[j-1][N-2]
-				+ u[j][N-3]
-				+ u[j+1][N-2]
-			  )
-			- dy * (p[j][N-2] - p[j-1][N-2]);
-			u[j][N-2] += omega * u_res; 
-			max_residual = max(u_res, max_residual);
-		}
-
-		// update bottom right
-		u_res = mu * (
-			-4*u[N-1][0]
-			+ u[N-2][0]
-			+ u[N-1][1]
-		  )
-		+ 2 * dy * (p[N-2][0]); // fixed this
-		u[N-1][0] += omega * u_res;
-		max_residual = max(u_res, max_residual);
-
-		 // update right side (outlet)
-		for (int k = 1; k < N-2; ++k) {
-			u_res = mu * (
-				-3*u[N-1][k]
-				+ u[N-2][k]
-				+ u[N-1][k-1]
-				+ u[N-1][k+1]
-			)
-			+ 2 * dy * (p[N-2][k]);
-			u[N-1][k] += omega * u_res;
-			max_residual = max(u_res, max_residual);
-		}
-
-		// update top right
-		u_res = mu * (
-			-4*u[N-1][N-2]
-			+ u[N-2][N-2]
-			+ u[N-1][N-3]
-		  )
-		+ 2 * dy * (p[N-2][N-2]);
-		u[N-1][N-2] += omega * u_res;
-		max_residual = max(u_res, max_residual);
-
-
-		/** update v values **/
-
-		// update bottom left
-		v[0][0] = 0;
 		
-		// update left side
-		for (int k = 1; k < N-1; ++k) {
-			v_res = mu * (
-				-3*v[0][k]
-				+ v[1][k]
-				+ v[0][k+1]
-				+ v[0][k-1]
-			)
-			- dx * (p[0][k] - p[0][k-1]);
+		// black pass for bottom and top boundary
+		#pragma omp for
+		for (int j=0; j<N; j+=2) {
+			u_res = mu * (-5*u[j][0] + u[j-1][0] + u[j][1] + u[j+1][0]) - dy * (p[j][0] - p[j-1][0]);
+			u[j][0] += omega*u_res;
+			max_residual = fmax(max_residual, fabs(u_res));	
+
+			u_res = mu * (-5*u[j][N-2] + u[j-1][N-2] + u[j][N-3] + u[j+1][N-2]) - dy * (p[j][N-2] - p[j-1][N-2]);
+			u[j][N-2] += omega * u_res;
+			max_residual = fmax(max_residual, fabs(u_res));	
+		}
+
+		// black interior pass
+		#pragma omp for collapse(2)
+		for (int j=1; j<N; ++j) {
+			int k_start = (j & 1) ? 1 : 2;
+			for (int k_start; k_start < N-2; k+=2) {
+				u_res = mu * (- 4*u[j][k] + u[j-1][k] + u[j+1][k] + u[j][k-1] + u[j][k+1]) - dy * (p[j][k] - p[j-1][k]);
+				u[j][k] += omega*u_res;
+				max_residual = fmax(max_residual, fabs(u_res));		
+			}
+		} 
+
+		// black pass for right boundary
+		#pragma omp for
+		for (int k=0; k<N-1; k+=2) { // bottom right
+			if (k == 0) {
+				u_res = mu * (-4*u[N-1][0] + u[N-2][0] + u[N-1][1]) + 2 * dy * (p[N-2][0]);
+			}
+			else if (k == N-2) { // top right
+				u_res = mu * (-4*u[N-1][N-2] + u[N-2][N-2] + u[N-1][N-3]) + 2 * dy * (p[N-2][N-2]);
+			}
+			else {
+				u_res = mu * (-3*u[N-1][k] + u[N-2][k] + u[N-1][k-1] + u[N-1][k+1]) + 2 * dy * (p[N-2][k]);
+			}
+
+			u[N-1][k] = omega*u_res;
+			max_residual = fmax(max_residual, fabs(u_res));	
+		}
+
+		// red pass for left boundary
+		#pragma omp for
+		for (int k=1;k<N-1; k+=2) {
+			if (k == N-2) { // top left
+				u_res = mu * (-4*u[0][N-2] + u[1][N-2] + u[0][N-3]) - 2*dy*(p[0][N-2] - P);
+			}
+			else { // interior
+				u_res = mu * (-3*u[0][k] + u[1][k] + u[0][k-1] + u[0][k+1]) - 2*dy*(p[0][k] - P);
+			}
+
+			u[0][k] += omega*u_res;
+			max_residual = fmax(max_residual, fabs(u_res));
+		}
+
+		// red pass for bottom and top boundary
+		#pragma omp for
+		for (int j=1; j<N; j+=2) {
+			u_res = mu * (-5*u[j][0] + u[j-1][0] + u[j][1] + u[j+1][0]) - dy * (p[j][0] - p[j-1][0]);
+			u[j][0] += omega*u_res;
+			max_residual = fmax(max_residual, fabs(u_res));	
+
+			u_res = mu * (-5*u[j][N-2] + u[j-1][N-2] + u[j][N-3] + u[j+1][N-2]) - dy * (p[j][N-2] - p[j-1][N-2]);
+			u[j][N-2] += omega * u_res;
+			max_residual = fmax(max_residual, fabs(u_res));	
+		}
+
+		// red interior pass
+		#pragma omp for collapse(2)
+		for (int j=1; j<N; ++j) {
+			int k_start = (j & 1) ? 2 : 1; // swap 1 and 2 
+			for (int k = k_start; k<N-2; k+=2) {
+				u_res = mu * (- 4*u[j][k] + u[j-1][k] + u[j+1][k] + u[j][k-1] + u[j][k+1]) - dy * (p[j][k] - p[j-1][k]);
+				u[j][k] += omega*u_res;
+				max_residual = fmax(max_residual, fabs(u_res));		
+			}
+		} 
+		
+		// red pass for right boundary
+		#pragma omp for
+		for (int k=1; k<N-1; k+=2) { // bottom right
+			if (k == N-2) { // top right
+				u_res = mu * (-4*u[N-1][N-2] + u[N-2][N-2] + u[N-1][N-3]) + 2 * dy * (p[N-2][N-2]);
+			}
+			else {
+				u_res = mu * (-3*u[N-1][k] + u[N-2][k] + u[N-1][k-1] + u[N-1][k+1]) + 2 * dy * (p[N-2][k]);
+			}
+
+			u[N-1][k] = omega*u_res;
+			max_residual = fmax(max_residual, fabs(u_res));	
+		}
+
+
+		/** udpate the v values **/ 
+		// black pass for left boundary
+		#pragma omp for
+		for (int k=0;k<N; k+=2) {
+			if (k == 0 || k == N-1) { // bottom left or top left
+				v_res = 0;
+			}
+			else { // interior
+				v_res = mu * (-3*v[0][k] + v[1][k] + v[0][k+1] + v[0][k-1]) - dx * (p[0][k] - p[0][k-1]);
+			}
+
 			v[0][k] += omega*v_res;
-			max_residual = max(v_res, max_residual);
+			max_residual = fmax(max_residual, fabs(v_res));	
+		}	
+
+		// black pass for bottom, top
+		#pragma omp for
+		for (int j=0; j<N-1; j+=2) {
+			v[j][0] = 0; // bottom
+			v[j][N-1] = 0; // top
+		}
+		
+		// black pass for interior
+		#pragma omp for collapse(2)
+		for (int j=1; j<N-1; ++j) {
+			int k_start = (j & 1) : 1 ? 2;
+			for (int k = k_start; k<N-2; k+=2) {
+				v_res = mu * (- 4*v[j][k] + v[j-1][k] + v[j+1][k]+ v[j][k+1] + v[j][k-1]) - dx*(p[j][k] - p[j][k-1]);
+				v[j][k] += omega*v_res;
+				max_residual = fmax(max_residual, fabs(v_res));		
+			}
 		}
 
-		// update top left
-		v[0][N-1] = 0; // N-1 for y direction
-
-		for (int j = 1; j < N-2; ++j) {
-			// update bottom
-			v[j][0] = 0;
-
-			// update interior
-			for (int k = 1; k < N-1; ++k) {
-				v_res = mu * (
-					- 4*v[j][k] 
-					+ v[j-1][k] 
-					+ v[j+1][k]
-					+ v[j][k+1] 
-					+ v[j][k-1]
-				)
-				- dx*(p[j][k] - p[j][k-1]);
-
-				v[j][k] += omega*v_res; 
-				max_residual = max(v_res, max_residual);
+		// black pass for right boundary
+		#pragma omp for
+		for (int k=0; k<N; k+=2) { // bottom right
+			if (k == 0 || k == N-1) {
+				v_res = 0;
+			}
+			else { // interior
+				v_res = mu * (-3*v[N-2][k] + v[N-3][k] + v[N-2][k+1] + v[N-2][k-1]) - dx * (p[N-2][k] - p[N-2][k-1]);
 			}
 
-			// update top
-			v[j][N-1] = 0;
+			v[j][k] += omega*v_res; 
+			max_residual = fmax(max_residual, fabs(u_res));	
+		}
+		
+		// red pass for bottom, top
+		#pragma omp for
+		for (int j=1; j<N-1; j+=2) {
+			v[j][0] = 0; // bottom
+			v[j][N-1] = 0; // top
 		}
 
-		// update bottom right
-		v[N-2][0] = 0;
-
-		// update right side
-		for (int k = 1; k < N-2; ++k) {
-			v_res = mu * (
-				-3*v[N-2][k]
-				+ v[N-3][k]
-				+ v[N-2][k+1]
-				+ v[N-2][k-1]
-			)
-			- dx * (p[N-2][k] - p[N-2][k-1]);
-
-			v[N-2][k] += omega*v_res;
-			max_residual = max(v_res, max_residual);
-		}
-
-		// update top right
-		v[N-2][N-1] = 0;
-
-
-		/** update p values **/
-
-		// update bottom left
-		p_res = - (u[1][0] - u[0][0]) - (v[0][1] - v[0][0]);
-
-		p[0][0] += omega*p_res;
-		max_residual = max(p_res, max_residual);
-
-		// update the left values
-		for (int k = 1; k < N-2; ++k) {
-			p_res = -(u[1][k] - u[0][k]) - (v[0][k+1] - v[0][k]);
-			p[0][k] += omega*p_res;
-			max_residual = max(p_res, max_residual);
-		}
-
-		// update the top left
-		p_res = -(u[1][N-2] - u[0][N-2]) - (v[0][N-1] - v[0][N-2]);
-
-		p[0][N-2] += omega*p_res;
-		max_residual = max(p_res, max_residual);
-
-		// update the interior
-		for (int j = 1; j < N-2; ++j) {
-			// update the bottom
-			p_res = -(u[j+1][0]	- u[j][0]) - (v[j][1] - v[j][0]);
-
-			p[j][0] += omega*p_res;
-			max_residual = max(p_res, max_residual);	
-
-			// interior
-			for (int k = 1; k < N-2; ++k) {
-				p_res = -(u[j+1][k] - u[j][k]) - (v[j][k+1] - v[j][k]);
-
-				p[j][k] += omega*p_res;
-				max_residual = max(p_res, max_residual);
+		// red pass for left boundary
+		#pragma omp for
+		for (int k=1;k<N; k+=2) {
+			if (k == N-1) { // top left
+				v_res = 0;
+			}
+			else { // interior
+				v_res = mu * (-3*v[0][k] + v[1][k] + v[0][k+1] + v[0][k-1]) - dx * (p[0][k] - p[0][k-1]);
 			}
 
-			// update the top
-			p_res = -(u[j+1][N-2] - u[j][N-2]) + v[j][N-2];
-
-			p[j][N-2] += omega*p_res;
-			max_residual = max(p_res, max_residual);
+			v[0][k] += omega*v_res;
+			max_residual = fmax(max_residual, fabs(v_res));	
 		}
 
-		// update bottom right
-		p_res = - (u[N-1][0] - u[N-2][0]) -(v[N-2][1] - v[N-2][0]); // fixed this
 
-		p[N-2][0] += omega*p_res;
-		max_residual = max(p_res, max_residual);	
-
-		// update right side
-		for (int k = 1; k < N-2; ++k) {
-			p_res = - (u[N-1][k] - u[N-2][k]) - (v[N-2][k+1] - v[N-2][k]); // fixed this
-
-			p[N-2][k] += omega*p_res;
-			max_residual = max(p_res, max_residual);
+		// red pass for bottom, interior, and top
+		#pragma omp for collapse(2)
+		for (int j=0; j<N-1; j+=2) {
+			int k_start = (j & 1) : 2 ? 1;
+			for (int k = k_start; k<N-2; k+=2) {
+				v_res = mu * (- 4*v[j][k] + v[j-1][k] + v[j+1][k]+ v[j][k+1] + v[j][k-1]) - dx*(p[j][k] - p[j][k-1]);
+				v[j][k] += omega*v_res;
+				max_residual = fmax(max_residual, fabs(v_res));		
+			}
 		}
 
-		// update top right
-		p_res = - (u[N-1][N-2] - u[N-2][N-2]) - (v[N-2][N-1] - v[N-2][N-2]); // fixed this
-
-		p[N-2][N-2] += omega*p_res;
-		max_residual = max(p_res, max_residual);
 
 
-		// debugging print
-		// if (i % 100 == 0) {
-		// 	printf("max residual at iteration %d: %.12f\n", i, max_residual);
-		// }
 
 		// break when we are within tolerance
 		if (max_residual < tol) {
