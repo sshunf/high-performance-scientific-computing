@@ -2,7 +2,8 @@
 #include <stdlib.h>
 #include <mpi.h>
 
-void transpose_matrix(double (*matrix)[N], int N) {
+// helper function to transpose matrix
+void transpose_matrix(int N, double matrix[][N]) {
     for (int i = 0; i < N; i++) {
         for (int j = i + 1; j < N; j++) {
             double temp = matrix[i][j];
@@ -56,28 +57,6 @@ int main(int argc, char *argv[]) {
     printf("M: %d\n", M);
     printf("seed: %ld\n", seed + rank);
 
-    double (*D)[N] = malloc(sizeof(*D) * local_N);
-    // initialize the tridiagonal matrix and scatter - how to account for boundary conditions?
-    if (rank == 0) {
-        double lambda = alpha * dt / (dx*dx);
-        double (*D_x)[N] = calloc(N, sizeof(*D_x));
-        D_x[0][0] = 1;
-        D_x[N-1][N-2] = 0; // TODO: fix these boundary conditions
-        D_x[N-1][N-1] = 0;
-        for (int i = 1; i < N-1; i++) {
-            for (int j = 0; j < N; j++) {
-                if (i == j) {
-                    D_x[i][j] = -2*lambda;
-                } else if (i - 1 == j || i + 1 == j) {
-                    D_x[i][j] = lambda;
-                }
-            }
-        }
-
-        // scatter
-        MPI_Scatter(D_x, N*N, MPI_DOUBLE, D, N*local_N, MPI_DOUBLE, MPI_COMM_WORLD);
-    }
-
     // calculate number of rows each process is responsible for
     int local_N = N / world_size;
 
@@ -97,12 +76,70 @@ int main(int argc, char *argv[]) {
         }
     }
 
+   
+    // initialize the tridiagonal matrix and scatter - how to account for boundary conditions?
+
+    double (*D_x)[N] = malloc(sizeof(*D_x) * local_N);
+    double (*D_y)[N] = malloc(sizeof(*D_y) * local_N);
+
+    if (rank == 0) {
+        double lambda = alpha / (dx*dx);
+        double (*D)[N] = calloc(N, sizeof(*D_x));
+
+        // first row
+        D[0][0] = -lambda;
+        D[0][1] = lambda;
+
+        // initialize interior
+        for (int i = 1; i < N-1; i++) {
+            for (int j = i-1; j <= i+1; j++) {
+                if (i == j) {
+                    D[i][j] = -2*lambda;
+                } else if (i-1 == j || i+1 == j) {
+                    D[i][j] = lambda;
+                }
+            }
+        }
+
+        // last row
+        D[N-1][N-2] = lambda;
+        D[N-1][N-1] = -lambda;
+
+        // scatter
+        MPI_Scatter(D, N*N, MPI_DOUBLE, D_x, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        transpose_matrix(N, D);
+        MPI_Scatter(D, N*N, MPI_DOUBLE, D_y, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    }
+
+    double rho_U; double rho_V; double rho_W;
+    double Uxx; double Vxx; double Wxx;
+    double dt2 = 0.5 * dt;
+
     // start the time step loop
     for (int t = 0; t < M; t++) {
-        // step 1 - explicit x update
+        // step 1 - explicit x update for U, V, W
         for (int i = 0; i < local_N; i++) {
             for (int j = 0; j < N; j++) {
-                continue;
+                rho_U = local_U[i][j] * (1 - local_U[i][j] - alpha * local_W[i][j]);
+                rho_V = local_V[i][j] * (1 - local_V[i][j] - alpha * local_U[i][j]);
+                rho_W = local_W[i][j] * (1 - local_W[i][j] - alpha * local_V[i][j]);
+                if (j == 0) {
+                    Uxx = D_x[i][j] * local_U[i][j] + D_x[i][j+1] * local_U[i][j+1];
+                    Vxx = D_x[i][j] * local_V[i][j] + D_x[i][j+1] * local_V[i][j+1];
+                    Wxx = D_x[i][j] * local_W[i][j] + D_x[i][j+1] * local_W[i][j+1];
+                } else if (j == N-1) {
+                    Uxx = D_x[i][j-1] * local_U[i][j-1] + D_x[i][j] * local_U[i][j];
+                    Vxx = D_x[i][j-1] * local_V[i][j-1] + D_x[i][j] * local_V[i][j];
+                    Wxx = D_x[i][j-1] * local_W[i][j-1] + D_x[i][j] * local_W[i][j];
+                } else {
+                    Uxx = D_x[i][j-1] * local_U[i][j-1] + D_x[i][j] * local_U[i][j] + D_x[i][j+1] * local_U[i][j+1];
+                    Vxx = D_x[i][j-1] * local_V[i][j-1] + D_x[i][j] * local_V[i][j] + D_x[i][j+1] * local_V[i][j+1];
+                    Wxx = D_x[i][j-1] * local_W[i][j-1] + D_x[i][j] * local_W[i][j] + D_x[i][j+1] * local_W[i][j+1];
+                }
+                
+                local_U[i][j] += dt2 * (Uxx + rho_U);
+                local_V[i][j] += dt2 * (Vxx + rho_V);
+                local_W[i][j] += dt2 * (Wxx + rho_W);
             }
         }
 
