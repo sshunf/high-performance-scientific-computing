@@ -169,7 +169,7 @@ int main(int argc, char *argv[]) {
 
     // initialize variables for explicit steps
     double rho_U; double rho_V; double rho_W;
-    double Uxx; double Vxx; double Wxx;
+    double Uxx; double Vxx; double Wxx; double Uyy; double Vyy; double Wxx
 
     // initialize parameters for implicit steps
     double ld_copy[N], d_copy[N], ud_copy[N], uud[N];
@@ -215,6 +215,7 @@ int main(int argc, char *argv[]) {
             printf("\n");
         }
 
+        printf("\n");
         for (int i = 0; i < N; ++i) {
             for (int j = 0; j < local_N; ++j) {
                 printf("local_Ut[%d][%d]: %.3f | ", i, j, local_Ut[i][j]);
@@ -241,17 +242,26 @@ int main(int argc, char *argv[]) {
         MPI_Alltoall(sendV, block, MPI_DOUBLE, recvV, block, MPI_DOUBLE, MPI_COMM_WORLD);
         MPI_Alltoall(sendW, block, MPI_DOUBLE, recvW, block, MPI_DOUBLE, MPI_COMM_WORLD);
 
+        printf("\n");
         for (int i = 0; i < N; ++i) {
             for (int j = 0; j < local_N; ++j) {
-                printf("local_Ur[%d][%d]: %.3f | ", i, j, local_Ur[i][j]);
+                printf("local_Ur[%d][%d]: %.10f | ", i, j, local_Ur[i][j]);
             }
             printf("\n");
         }
         
         // transpose back
-        transpose_matrix(N, local_N, local_Ur, local_U);
-        transpose_matrix(N, local_N, local_Vr, local_V);
-        transpose_matrix(N, local_N, local_Wr, local_W);
+        // transpose_matrix(N, local_N, local_Ur, local_U);
+        // transpose_matrix(N, local_N, local_Vr, local_V);
+        // transpose_matrix(N, local_N, local_Wr, local_W);
+
+        // printf("\n");
+        // for (int i = 0; i < local_N; ++i) {
+        //     for (int j = 0; j < N; ++j) {
+        //         printf("local_U[%d][%d]: %.3f | ", i, j, local_U[i][j]);
+        //     }
+        //     printf("\n");
+        // }
 
         // step 2 - implicit y update (using lapack)
 
@@ -261,14 +271,15 @@ int main(int argc, char *argv[]) {
 
         // for each RHS matrix (bU, bV, bW), refactor A and solve
         for (int i = 0; i < 3; i++) {
+            printf("solve loop\n");
             memcpy(ld_copy, ld, N * sizeof(double));
             memcpy(d_copy, d, N * sizeof(double));
             memcpy(ud_copy, ud, N * sizeof(double));
 
             double *rhs;
-            if (i == 0) rhs = &local_U[0][0];
-            else if (i == 1) rhs = &local_V[0][0];
-            else rhs = &local_W[0][0];
+            if (i == 0) rhs = &local_Ur[0][0];
+            else if (i == 1) rhs = &local_Vr[0][0];
+            else rhs = &local_Wr[0][0];
 
             dgttrf_(&N, ld_copy, d_copy, ud_copy, uud, pivot, &info);
             if (info != 0) {
@@ -281,8 +292,23 @@ int main(int argc, char *argv[]) {
                 fprintf(stderr, "dgttrs_ failed with info = %d\n", info);
                 MPI_Abort(MPI_COMM_WORLD, -1); 
             }
-}
+        }
+
+
+        printf("after solve\n");
+        for (int i = 0; i < N; ++i) {
+            for (int j = 0; j < local_N; ++j) {
+                printf("local_Ur[%d][%d]: %.10f | ", i, j, local_Ur[i][j]);
+            }
+            printf("\n");
+        }
+
         // step 3 - explicit y update
+        for (int i = 0; i < N; i++) {
+            for (int j = 0; j < local_N; j++) {
+                continue;
+            }
+        }
 
         // transpose array + MPI scatter
 
@@ -365,8 +391,6 @@ int main(int argc, char *argv[]) {
     free(ld);
     free(d);
     free(ud);
-    free(uud);
-    free(pivot);
 
     if (rank == 0) {
         free(U);
