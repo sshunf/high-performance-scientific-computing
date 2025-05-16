@@ -10,7 +10,7 @@ Solves Rock-paper-scissors model problem using ADI
 #include <mpi.h>
 
 // helper function to transpose matrix
-void transpose_matrix(int Nx, int Ny, double matrix[][Ny], double t_matrix[][Nx]) {
+void transpose_matrix(int Nx, int Ny, double (*matrix)[Ny], double (*t_matrix)[Nx]) {
     for (int i = 0; i < Nx; i++) {
         for (int j = 0; j < Ny; j++) {
             t_matrix[j][i] = matrix[i][j];
@@ -94,7 +94,7 @@ int main(int argc, char *argv[]) {
             local_V[i][j] = coeff * sigma;
 
             sigma = (double)rand() / RAND_MAX;
-            local_W[i][j] = init_val * coeff;
+            local_W[i][j] = coeff * sigma;
         }
     }
     
@@ -108,10 +108,10 @@ int main(int argc, char *argv[]) {
     double* ud = malloc(N*sizeof(double));
     
     double dt2 = 0.5 * dt;
-    double (*D)[N] = NULL; 
+    double (*D)[N] = NULL;
+    double lambda = alpha / (dx*dx);
     // initialize D matrix and diagonals and broadcast
     if (rank == 0) {
-        double lambda = alpha / (dx*dx);
         D = malloc(sizeof(*D) * N);
 
         // first row
@@ -132,12 +132,19 @@ int main(int argc, char *argv[]) {
         // last row
         D[N-1][N-2] = lambda;
         D[N-1][N-1] = -lambda;
+    }
 
-        // scatter
-        MPI_Scatter(D, N*local_N, MPI_DOUBLE, D_x, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-        transpose_matrix(N, N, D, D_y);
-        MPI_Scatter(D, N*local_N, MPI_DOUBLE, D_y, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    // scatter
+    MPI_Scatter(D, N*local_N, MPI_DOUBLE, D_x, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    
+    // TODO: maybe allocate a another D 2d array and then call transpose_matrix to D
+    if (rank == 0) {
+        D[0][0] = lambda; D[0][1] = -lambda; D[N-1][N-2] = -lambda; D[N-1][N-1] = lambda; // transpose the matrix --> these act as a transpose
+    }
 
+    MPI_Scatter(D, N*local_N, MPI_DOUBLE, D_y, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+    if (rank == 0) {
         // initilaize the diagonals
         for (int i = 0; i < N; i++) {
             d[i] = 1 - dt2 * D[i][i];
@@ -146,12 +153,12 @@ int main(int argc, char *argv[]) {
                 ud[i] = dt2 * D[i][i+1];
             }
         }
-        
-        // broadcast of d, ld, ud
-        MPI_Bcast(d, N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-        MPI_Bcast(ld, N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-        MPI_Bcast(ud, N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     }
+    // broadcast of d, ld, ud
+    MPI_Bcast(d, N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    MPI_Bcast(ld, N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    MPI_Bcast(ud, N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
 
     double rho_U; double rho_V; double rho_W;
     double Uxx; double Vxx; double Wxx;
@@ -204,7 +211,7 @@ int main(int argc, char *argv[]) {
         }
         
         // blocking scatter + gather for all processes 
-        int block = (local_N * N) / world_size;
+        int block = local_N * local_N;
         // MPI_Scatter(local_Ut, block, MPI_DOUBLE, &local_Ur[rank*local_N][0], block, MPI_DOUBLE, rank, MPI_COMM_WORLD);
         // MPI_Scatter(local_Vt, block, MPI_DOUBLE, &local_Vr[rank*local_N][0], block, MPI_DOUBLE, rank, MPI_COMM_WORLD);
         // MPI_Scatter(local_Wt, block, MPI_DOUBLE, &local_Wr[rank*local_N][0], block, MPI_DOUBLE, rank, MPI_COMM_WORLD);
@@ -235,8 +242,8 @@ int main(int argc, char *argv[]) {
         transpose_matrix(N, local_N, local_Wr, local_W);
 
         // step 2 - implicit y update (using lapack)
-
         // three calls to dgtsv_ here using nrhs = localN? solution overwrites local_U, local_V, local_W
+        // dgtsv_(&N, local_N, )
         
 
         // step 3 - explicit y update
