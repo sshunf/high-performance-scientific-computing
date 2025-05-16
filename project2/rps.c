@@ -20,6 +20,9 @@ void transpose_matrix(int Nx, int Ny, double matrix[][Ny], double t_matrix[][Nx]
 	
 int main(int argc, char *argv[]) {
     MPI_Init(&argc, &argv);
+    #ifdef DO_ERROR_CHECKING
+    MPI_Comm_set_errhandler(MPI_COMM_WORLD, MPI_ERRORS_RETURN);
+    #endif
 
     // check number of arguments
     if (argc < 4) {
@@ -57,12 +60,10 @@ int main(int argc, char *argv[]) {
     double sigma;
 
     // print arguments
-    if (rank == 0) {
-        printf("N: %d\n", N);
-        printf("alpha: %.2f\n", alpha);
-        printf("M: %d\n", M);
-        printf("seed: %ld\n", seed + rank);
-    }
+    printf("N: %d\n", N);
+    printf("alpha: %.2f\n", alpha);
+    printf("M: %d\n", M);
+    printf("seed: %ld\n", seed + rank);
 
     // calculate number of rows each process is responsible for
     int local_N = N / world_size;
@@ -103,11 +104,11 @@ int main(int argc, char *argv[]) {
     double* ud = malloc(N*sizeof(double));
     
     double dt2 = 0.5 * dt;
-    MPI_Request D_request;
-
+    double (*D)[N] = NULL; 
+    // initialize D matrix and diagonals and broadcast
     if (rank == 0) {
         double lambda = alpha / (dx*dx);
-        double (*D)[N] = malloc(sizeof(*D) * N);
+        D = malloc(sizeof(*D) * N);
 
         // first row
         D[0][0] = -lambda;
@@ -129,9 +130,9 @@ int main(int argc, char *argv[]) {
         D[N-1][N-1] = -lambda;
 
         // scatter
-        MPI_Iscatter(D, N*N, MPI_DOUBLE, D_x, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD, &D_request);
+        MPI_Scatter(D, N*local_N, MPI_DOUBLE, D_x, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
         transpose_matrix(N, N, D, D_y);
-        MPI_Iscatter(D, N*N, MPI_DOUBLE, D_y, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD, &D_request);
+        MPI_Scatter(D, N*local_N, MPI_DOUBLE, D_y, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
         // initilaize the diagonals
         for (int i = 0; i < N; i++) {
@@ -142,17 +143,15 @@ int main(int argc, char *argv[]) {
             }
         }
         
-        // broadcast of M_x, M_y
+        // broadcast of d, ld, ud
         MPI_Bcast(d, N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
         MPI_Bcast(ld, N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
         MPI_Bcast(ud, N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-        free(D);
     }
 
     double rho_U; double rho_V; double rho_W;
     double Uxx; double Vxx; double Wxx;
 
-    MPI_Wait(&D_request, MPI_STATUS_IGNORE);
     // start the time step loop
     for (int t = 0; t < M; t++) {
         for (int i = 0; i < local_N; i++) {
@@ -186,19 +185,39 @@ int main(int argc, char *argv[]) {
         transpose_matrix(local_N, N, local_V, local_Vt);
         transpose_matrix(local_N, N, local_W, local_Wt);
 
-        // blocking scatter + gather for all processes TODO: change to scatter
-        int block = (local_N * N) / world_size;
-        MPI_Scatter(local_Ut, block, MPI_DOUBLE, &local_Ur[rank*local_N][0], block, MPI_DOUBLE, rank, MPI_COMM_WORLD);
-        MPI_Scatter(local_Vt, block, MPI_DOUBLE, &local_Vr[rank*local_N][0], block, MPI_DOUBLE, rank, MPI_COMM_WORLD);
-        MPI_Scatter(local_Wt, block, MPI_DOUBLE, &local_Wr[rank*local_N][0], block, MPI_DOUBLE, rank, MPI_COMM_WORLD);
+        for (int i = 0; i < local_N; ++i) {
+            for (int j = 0; j < N; ++j) {
+                printf("local_U[%d][%d]: %.3f | ", i, j, local_U[i][j]);
+            }
+            printf("\n");
+        }
 
+        for (int i = 0; i < N; ++i) {
+            for (int j = 0; j < local_N; ++j) {
+                printf("local_Ut[%d][%d]: %.3f | ", i, j, local_Ut[i][j]);
+            }
+            printf("\n");
+        }
+        
+        // blocking scatter + gather for all processes 
+        int block = (local_N * N) / world_size;
+        MPI_Scatter(&local_Ut[rank*local_N][0], block, MPI_DOUBLE, &local_Ur[rank*local_N][0], block, MPI_DOUBLE, rank, MPI_COMM_WORLD);
+        MPI_Scatter(&local_Vt[rank*local_N][0], block, MPI_DOUBLE, &local_Vr[rank*local_N][0], block, MPI_DOUBLE, rank, MPI_COMM_WORLD);
+        MPI_Scatter(&local_Wt[rank*local_N][0], block, MPI_DOUBLE, &local_Wr[rank*local_N][0], block, MPI_DOUBLE, rank, MPI_COMM_WORLD);
+
+        for (int i = 0; i < N; ++i) {
+            for (int j = 0; j < local_N; ++j) {
+                printf("local_Ur[%d][%d]: %.3f | ", i, j, local_Ur[i][j]);
+            }
+            printf("\n");
+        }
+        
         // transpose back
         transpose_matrix(N, local_N, local_Ur, local_U);
         transpose_matrix(N, local_N, local_Vr, local_V);
         transpose_matrix(N, local_N, local_Wr, local_W);
 
         // step 2 - implicit y update (using lapack)
-        MPI_Wait(&D_request, MPI_STATUS_IGNORE);        
 
         // three calls to dgtsv_ here using nrhs = localN? solution overwrites local_U, local_V, local_W
         
@@ -209,11 +228,17 @@ int main(int argc, char *argv[]) {
 
         // step 4 implicit x update (using lapack)
     }
+    
+    double (*U)[N] = NULL;
+    double (*V)[N] = NULL;
+    double (*W)[N] = NULL;
 
     // MPI Gather to rank 0
-    double (*U)[N] = malloc(N*sizeof(*U));
-    double (*V)[N] = malloc(N*sizeof(*V));
-    double (*W)[N] = malloc(N*sizeof(*W));
+    if (rank == 0) {
+        U = malloc(N*sizeof(*U));
+        V = malloc(N*sizeof(*V));
+        W = malloc(N*sizeof(*W));
+    }
 
     MPI_Gather(local_U, N*local_N, MPI_DOUBLE, U, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     MPI_Gather(local_V, N*local_N, MPI_DOUBLE, V, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
@@ -233,38 +258,38 @@ int main(int argc, char *argv[]) {
     // fclose(fW);
 
 
-
-    // Write U to text file
-    FILE *fU = fopen("RPSU.txt", "w");
-    for (int i = 0; i < N; i++) {
-        for (int j = 0; j < N; j++) {
-            fprintf(fU, "%.10f ", U[i][j]);
+    if (rank == 0) {
+        // Write U to text file
+        FILE *fU = fopen("RPSU.txt", "w");
+        for (int i = 0; i < N; i++) {
+            for (int j = 0; j < N; j++) {
+                fprintf(fU, "%.10f ", U[i][j]);
+            }
+            fprintf(fU, "\n");
         }
-        fprintf(fU, "\n");
-    }
-    fclose(fU);
+        fclose(fU);
 
-    // Write V to text file
-    FILE *fV = fopen("RPSV.txt", "w");
-    for (int i = 0; i < N; i++) {
-        for (int j = 0; j < N; j++) {
-            fprintf(fV, "%.10f ", V[i][j]);
+        // Write V to text file
+        FILE *fV = fopen("RPSV.txt", "w");
+        for (int i = 0; i < N; i++) {
+            for (int j = 0; j < N; j++) {
+                fprintf(fV, "%.10f ", V[i][j]);
+            }
+            fprintf(fV, "\n");
         }
-        fprintf(fV, "\n");
-    }
-    fclose(fV);
+        fclose(fV);
 
-    // Write W to text file
-    FILE *fW = fopen("RPSW.txt", "w");
-    for (int i = 0; i < N; i++) {
-        for (int j = 0; j < N; j++) {
-            fprintf(fW, "%.10f ", W[i][j]);
+        // Write W to text file
+        FILE *fW = fopen("RPSW.txt", "w");
+        for (int i = 0; i < N; i++) {
+            for (int j = 0; j < N; j++) {
+                fprintf(fW, "%.10f ", W[i][j]);
+            }
+            fprintf(fW, "\n");
         }
-        fprintf(fW, "\n");
+        fclose(fW);
     }
-    fclose(fW);
-
-
+    
     // free memory
     free(local_U);
     free(local_V);
@@ -280,9 +305,13 @@ int main(int argc, char *argv[]) {
     free(ld);
     free(d);
     free(ud);
-    free(U);
-    free(V);
-    free(W);
+
+    if (rank == 0) {
+        free(U);
+        free(V);
+        free(W);
+        free(D);
+    }
 
     MPI_Finalize();
     return 0;
