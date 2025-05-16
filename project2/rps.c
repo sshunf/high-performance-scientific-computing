@@ -57,10 +57,12 @@ int main(int argc, char *argv[]) {
     double sigma;
 
     // print arguments
-    printf("N: %d\n", N);
-    printf("alpha: %.2f\n", alpha);
-    printf("M: %d\n", M);
-    printf("seed: %ld\n", seed + rank);
+    if (rank == 0) {
+        printf("N: %d\n", N);
+        printf("alpha: %.2f\n", alpha);
+        printf("M: %d\n", M);
+        printf("seed: %ld\n", seed + rank);
+    }
 
     // calculate number of rows each process is responsible for
     int local_N = N / world_size;
@@ -90,24 +92,22 @@ int main(int argc, char *argv[]) {
             local_W[i][j] = init_val;
         }
     }
-
-    // initialize the tridiagonal matrix and scatter
+    
     double (*D_x)[N] = malloc(sizeof(*D_x) * local_N);
     double (*D_y)[N] = malloc(sizeof(*D_y) * local_N);
-    
+
     // initialize subdiagonal, diagonal, and superdiagonal
     // (I - dt/2 * D_x) and (I - dt/2 * D_y)
     double* ld = malloc(N*sizeof(double));
     double* d = malloc(N*sizeof(double));
     double* ud = malloc(N*sizeof(double));
-
+    
     double dt2 = 0.5 * dt;
-    MPI_Request request;
     MPI_Request D_request;
 
     if (rank == 0) {
         double lambda = alpha / (dx*dx);
-        double (*D)[N] = malloc(sizeof(*D_x) * N);
+        double (*D)[N] = malloc(sizeof(*D) * N);
 
         // first row
         D[0][0] = -lambda;
@@ -133,28 +133,19 @@ int main(int argc, char *argv[]) {
         transpose_matrix(N, N, D, D_y);
         MPI_Iscatter(D, N*N, MPI_DOUBLE, D_y, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD, &D_request);
 
-        
-        // fix this part
-        // compute M_x, M_y
-        for (int i = 0; i < N-1; i++) {
-            for (int j = i-1; j <= i+1; j++) {
-                if (i == j) {
-                    M_x[i][j] = 1 - dt2 * D_x[i][j];
-                    M_y[i][j] = 1 - dt2 * D_y[i][j];
-                } else if (i-1 == j || i+1 == j) {
-                    M_x[i][j] = dt2 * D_x[i][j];
-                    M_y[i][j] = dt2 * D_y[i][j];
-                }
+        // initilaize the diagonals
+        for (int i = 0; i < N; i++) {
+            d[i] = 1 - dt2 * D[i][i];
+            if (i < N-1) {
+                ld[i] = dt2 * D[i+1][i]; 
+                ud[i] = dt2 * D[i][i+1];
             }
         }
-        M_x[0][0] = 1 + dt2 * D[0][0];
-        M_x[0][1] = dt2 * D[0][1];
-        M_y[0][0] = 1 + dt2 * D[0][0];
-        M_y[0][1] = dt2 * D[0][1];
         
-        // unblocking broadcast of M_x, M_y
-        MPI_Ibcast(M_x, N*N, MPI_DOUBLE, 0, MPI_COMM_WORLD, &M_request);
-        MPI_Ibcast(M_y, N*N, MPI_DOUBLE, 0, MPI_COMM_WORLD, &M_request);
+        // broadcast of M_x, M_y
+        MPI_Bcast(d, N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        MPI_Bcast(ld, N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        MPI_Bcast(ud, N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
         free(D);
     }
 
@@ -207,10 +198,10 @@ int main(int argc, char *argv[]) {
         transpose_matrix(N, local_N, local_Wr, local_W);
 
         // step 2 - implicit y update (using lapack)
-
+        MPI_Wait(&D_request, MPI_STATUS_IGNORE);        
 
         // three calls to dgtsv_ here using nrhs = localN? solution overwrites local_U, local_V, local_W
-
+        
 
         // step 3 - explicit y update
 
@@ -219,9 +210,61 @@ int main(int argc, char *argv[]) {
         // step 4 implicit x update (using lapack)
     }
 
-    // MPI Gather to rank 0 + write to files
+    // MPI Gather to rank 0
+    double (*U)[N] = malloc(N*sizeof(*U));
+    double (*V)[N] = malloc(N*sizeof(*V));
+    double (*W)[N] = malloc(N*sizeof(*W));
 
+    MPI_Gather(local_U, N*local_N, MPI_DOUBLE, U, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    MPI_Gather(local_V, N*local_N, MPI_DOUBLE, V, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    MPI_Gather(local_W, N*local_N, MPI_DOUBLE, W, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     
+    // write result to files
+    // FILE *fU = fopen("RPSU.out", "wb");
+    // fwrite(U, sizeof(double), N*N, fU);
+    // fclose(fU);
+
+    // FILE *fV = fopen("RPSV.out", "wb");
+    // fwrite(V, sizeof(double), N*N, fV);
+    // fclose(fU);
+
+    // FILE *fW = fopen("RSPW.out", "wb");
+    // fwrite(W, sizeof(double), N*N, fW);
+    // fclose(fW);
+
+
+
+    // Write U to text file
+    FILE *fU = fopen("RPSU.txt", "w");
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < N; j++) {
+            fprintf(fU, "%.10f ", U[i][j]);
+        }
+        fprintf(fU, "\n");
+    }
+    fclose(fU);
+
+    // Write V to text file
+    FILE *fV = fopen("RPSV.txt", "w");
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < N; j++) {
+            fprintf(fV, "%.10f ", V[i][j]);
+        }
+        fprintf(fV, "\n");
+    }
+    fclose(fV);
+
+    // Write W to text file
+    FILE *fW = fopen("RPSW.txt", "w");
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < N; j++) {
+            fprintf(fW, "%.10f ", W[i][j]);
+        }
+        fprintf(fW, "\n");
+    }
+    fclose(fW);
+
+
     // free memory
     free(local_U);
     free(local_V);
@@ -234,8 +277,12 @@ int main(int argc, char *argv[]) {
     free(local_Wr);
     free(D_x);
     free(D_y);
-    free(M_x);
-    free(M_y);
+    free(ld);
+    free(d);
+    free(ud);
+    free(U);
+    free(V);
+    free(W);
 
     MPI_Finalize();
     return 0;
