@@ -87,10 +87,14 @@ int main(int argc, char *argv[]) {
     for (int i = 0; i < local_N; i++) {
         for (int j = 0; j < N; j++) {
             sigma = (double)rand() / RAND_MAX;
-            double init_val = 1.0 / (1 + alpha) * sigma;
-            local_U[i][j] = init_val; 
-            local_V[i][j] = init_val;
-            local_W[i][j] = init_val;
+            double coeff = 1.0 / (1 + alpha);
+            local_U[i][j] = coeff * sigma;
+
+            sigma = (double)rand() / RAND_MAX;
+            local_V[i][j] = coeff * sigma;
+
+            sigma = (double)rand() / RAND_MAX;
+            local_W[i][j] = init_val * coeff;
         }
     }
     
@@ -201,9 +205,22 @@ int main(int argc, char *argv[]) {
         
         // blocking scatter + gather for all processes 
         int block = (local_N * N) / world_size;
-        MPI_Scatter(&local_Ut[rank*local_N][0], block, MPI_DOUBLE, &local_Ur[rank*local_N][0], block, MPI_DOUBLE, rank, MPI_COMM_WORLD);
-        MPI_Scatter(&local_Vt[rank*local_N][0], block, MPI_DOUBLE, &local_Vr[rank*local_N][0], block, MPI_DOUBLE, rank, MPI_COMM_WORLD);
-        MPI_Scatter(&local_Wt[rank*local_N][0], block, MPI_DOUBLE, &local_Wr[rank*local_N][0], block, MPI_DOUBLE, rank, MPI_COMM_WORLD);
+        // MPI_Scatter(local_Ut, block, MPI_DOUBLE, &local_Ur[rank*local_N][0], block, MPI_DOUBLE, rank, MPI_COMM_WORLD);
+        // MPI_Scatter(local_Vt, block, MPI_DOUBLE, &local_Vr[rank*local_N][0], block, MPI_DOUBLE, rank, MPI_COMM_WORLD);
+        // MPI_Scatter(local_Wt, block, MPI_DOUBLE, &local_Wr[rank*local_N][0], block, MPI_DOUBLE, rank, MPI_COMM_WORLD);
+
+        // flatten the 2d arrays into pointers for MPI
+        double *sendU = &local_Ut[0][0];
+        double *recvU = &local_Ur[0][0];
+        double *sendV = &local_Vt[0][0];
+        double *recvV = &local_Vr[0][0];
+        double *sendW = &local_Wt[0][0];
+        double *recvW = &local_Wr[0][0];
+
+        // scatter + gather
+        MPI_Alltoall(sendU, block, MPI_DOUBLE, recvU, block, MPI_DOUBLE, MPI_COMM_WORLD);
+        MPI_Alltoall(sendV, block, MPI_DOUBLE, recvV, block, MPI_DOUBLE, MPI_COMM_WORLD);
+        MPI_Alltoall(sendW, block, MPI_DOUBLE, recvW, block, MPI_DOUBLE, MPI_COMM_WORLD);
 
         for (int i = 0; i < N; ++i) {
             for (int j = 0; j < local_N; ++j) {
