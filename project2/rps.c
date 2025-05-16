@@ -2,12 +2,20 @@
 ES_APPM 344 - Project 2
 Shun Fujita
 
-Solves Rock-paper-scissors model problem using ADI
+Solves the Rock-paper-scissors model problem using ADI + MPI on distributed cluster
 */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <mpi.h>
+#include <string.h>
+
+// lapack function prototypes
+extern void dgttrf_(int *n, double *dl, double *d, double *du, double *uud, int *pivot, int *info);
+extern void dgttrs_(char *trans, int *n, int *nrhs,
+                    double *dl, double *d, double *du, double *uud,
+                    int *pivot, double *b, int *ldb, int *info);
+
 
 // helper function to transpose matrix
 void transpose_matrix(int Nx, int Ny, double (*matrix)[Ny], double (*t_matrix)[Nx]) {
@@ -159,9 +167,13 @@ int main(int argc, char *argv[]) {
     MPI_Bcast(ld, N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     MPI_Bcast(ud, N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
-
+    // initialize variables for explicit steps
     double rho_U; double rho_V; double rho_W;
     double Uxx; double Vxx; double Wxx;
+
+    // initialize parameters for implicit steps
+    double ld_copy[N], d_copy[N], ud_copy[N], uud[N];
+    int pivot[N];
 
     // start the time step loop
     for (int t = 0; t < M; t++) {
@@ -242,10 +254,34 @@ int main(int argc, char *argv[]) {
         transpose_matrix(N, local_N, local_Wr, local_W);
 
         // step 2 - implicit y update (using lapack)
-        // three calls to dgtsv_ here using nrhs = localN? solution overwrites local_U, local_V, local_W
-        // dgtsv_(&N, local_N, )
-        
 
+        // make a copy of ld, d, ud
+        int info;
+        char tr = 'N';
+
+        // for each RHS matrix (bU, bV, bW), refactor A and solve
+        for (int i = 0; i < 3; i++) {
+            memcpy(ld_copy, ld, N * sizeof(double));
+            memcpy(d_copy, d, N * sizeof(double));
+            memcpy(ud_copy, ud, N * sizeof(double));
+
+            double *rhs;
+            if (i == 0) rhs = &local_U[0][0];
+            else if (i == 1) rhs = &local_V[0][0];
+            else rhs = &local_W[0][0];
+
+            dgttrf_(&N, ld_copy, d_copy, ud_copy, uud, pivot, &info);
+            if (info != 0) {
+                fprintf(stderr, "dgttrf_ failed with info = %d\n", info);
+                MPI_Abort(MPI_COMM_WORLD, -1);
+            }
+
+            dgttrs_(&tr, &N, &local_N, ld_copy, d_copy, ud_copy, uud, pivot, rhs, &N, &info);
+            if (info != 0) {
+                fprintf(stderr, "dgttrs_ failed with info = %d\n", info);
+                MPI_Abort(MPI_COMM_WORLD, -1); 
+            }
+}
         // step 3 - explicit y update
 
         // transpose array + MPI scatter
@@ -329,6 +365,8 @@ int main(int argc, char *argv[]) {
     free(ld);
     free(d);
     free(ud);
+    free(uud);
+    free(pivot);
 
     if (rank == 0) {
         free(U);
