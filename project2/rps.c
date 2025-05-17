@@ -25,6 +25,24 @@ void transpose_matrix(int Nx, int Ny, double (*matrix)[Ny], double (*t_matrix)[N
         }
     }
 }
+
+// helper function to transpose the blocks within a matrix - assumes more rows that columns
+// inputs:
+//  N: block_width (same as block_height) we assume square here
+//  num_blocks: number of processes or blocks in matrix
+void transpose_blocks(int N, double matrix[][N], int num_blocks) {
+    for (int b = 0; b < num_blocks; b++) {
+        int row_offset = b * N;
+
+        for (int i = 0; i < N; i++) {
+            for (int j = i + 1; j < N; j++) {
+                double temp = matrix[row_offset + i][j];
+                matrix[row_offset + i][j] = matrix[row_offset + j][i];
+                matrix[row_offset + j][i] = temp;
+            }
+        }
+    }
+}
 	
 int main(int argc, char *argv[]) {
     MPI_Init(&argc, &argv);
@@ -169,7 +187,7 @@ int main(int argc, char *argv[]) {
 
     // initialize variables for explicit steps
     double rho_U; double rho_V; double rho_W;
-    double Uxx; double Vxx; double Wxx; double Uyy; double Vyy; double Wxx
+    double Uxx; double Vxx; double Wxx; double Uyy; double Vyy; double Wyy;
 
     // initialize parameters for implicit steps
     double ld_copy[N], d_copy[N], ud_copy[N], uud[N];
@@ -242,26 +260,26 @@ int main(int argc, char *argv[]) {
         MPI_Alltoall(sendV, block, MPI_DOUBLE, recvV, block, MPI_DOUBLE, MPI_COMM_WORLD);
         MPI_Alltoall(sendW, block, MPI_DOUBLE, recvW, block, MPI_DOUBLE, MPI_COMM_WORLD);
 
-        printf("\n");
+        printf("after gather\n");
         for (int i = 0; i < N; ++i) {
             for (int j = 0; j < local_N; ++j) {
-                printf("local_Ur[%d][%d]: %.10f | ", i, j, local_Ur[i][j]);
+                printf("local_Ur[%d][%d]: %.3f | ", i, j, local_Ur[i][j]);
             }
             printf("\n");
         }
         
-        // transpose back
-        // transpose_matrix(N, local_N, local_Ur, local_U);
-        // transpose_matrix(N, local_N, local_Vr, local_V);
-        // transpose_matrix(N, local_N, local_Wr, local_W);
+        // transpose each block in received buffer
+        transpose_blocks(local_N, local_Ur, world_size);
+        transpose_blocks(local_N, local_Vr, world_size);
+        transpose_blocks(local_N, local_Wr, world_size);
 
-        // printf("\n");
-        // for (int i = 0; i < local_N; ++i) {
-        //     for (int j = 0; j < N; ++j) {
-        //         printf("local_U[%d][%d]: %.3f | ", i, j, local_U[i][j]);
-        //     }
-        //     printf("\n");
-        // }
+        printf("after transpose block\n");
+        for (int i = 0; i < N; ++i) {
+            for (int j = 0; j < local_N; ++j) {
+                printf("local_Ur[%d][%d]: %.3f | ", i, j, local_Ur[i][j]);
+            }
+            printf("\n");
+        }
 
         // step 2 - implicit y update (using lapack)
 
@@ -295,18 +313,21 @@ int main(int argc, char *argv[]) {
         }
 
 
-        printf("after solve\n");
-        for (int i = 0; i < N; ++i) {
-            for (int j = 0; j < local_N; ++j) {
-                printf("local_Ur[%d][%d]: %.10f | ", i, j, local_Ur[i][j]);
-            }
-            printf("\n");
-        }
+        // printf("after solve\n");
+        // for (int i = 0; i < N; ++i) {
+        //     for (int j = 0; j < local_N; ++j) {
+        //         printf("local_Ur[%d][%d]: %.10f | ", i, j, local_Ur[i][j]);
+        //     }
+        //     printf("\n");
+        // }
 
         // step 3 - explicit y update
         for (int i = 0; i < N; i++) {
             for (int j = 0; j < local_N; j++) {
-                continue;
+                rho_U = local_Ur[i][j] * (1 - local_Ur[i][j] - alpha * local_Wr[i][j]);
+                rho_V = local_Vr[i][j] * (1 - local_Vr[i][j] - alpha * local_Ur[i][j]);
+                rho_W = local_Wr[i][j] * (1 - local_Wr[i][j] - alpha * local_Vr[i][j]);
+                // continue
             }
         }
 
