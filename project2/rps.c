@@ -43,6 +43,20 @@ void transpose_blocks(int N, double matrix[][N], int num_blocks) {
         }
     }
 }
+
+// Helper to move square blocks into a row-wise layout for column-major reconstruction
+// N: total number of columns in destination matrix
+void move_blocks(int N, int block_width, int num_blocks, double original[][block_width], double dest[][N]) {
+    for (int b = 0; b < num_blocks; b++) {
+        int offset = b * block_width;
+
+        for (int i = 0; i < block_width; i++) {
+            for (int j = 0; j < block_width; j++) {
+                dest[i][offset + j] = original[offset + i][j];
+            }
+        }
+    } 
+}
 	
 int main(int argc, char *argv[]) {
     MPI_Init(&argc, &argv);
@@ -269,14 +283,18 @@ int main(int argc, char *argv[]) {
         }
         
         // transpose each block in received buffer
-        transpose_blocks(local_N, local_Ur, world_size);
-        transpose_blocks(local_N, local_Vr, world_size);
-        transpose_blocks(local_N, local_Wr, world_size);
+        // transpose_blocks(local_N, local_Ur, world_size);
+        // transpose_blocks(local_N, local_Vr, world_size);
+        // transpose_blocks(local_N, local_Wr, world_size);
 
-        printf("after transpose block\n");
-        for (int i = 0; i < N; ++i) {
-            for (int j = 0; j < local_N; ++j) {
-                printf("local_Ur[%d][%d]: %.3f | ", i, j, local_Ur[i][j]);
+        move_blocks(N, local_N, world_size, local_Ur, local_U);
+        move_blocks(N, local_N, world_size, local_Vr, local_V);
+        move_blocks(N, local_N, world_size, local_Wr, local_W);
+
+        printf("after moving blocks\n");
+        for (int i = 0; i < local_N; ++i) {
+            for (int j = 0; j < N; ++j) {
+                printf("local_U[%d][%d]: %.3f | ", i, j, local_U[i][j]);
             }
             printf("\n");
         }
@@ -295,9 +313,9 @@ int main(int argc, char *argv[]) {
             memcpy(ud_copy, ud, N * sizeof(double));
 
             double *rhs;
-            if (i == 0) rhs = &local_Ur[0][0];
-            else if (i == 1) rhs = &local_Vr[0][0];
-            else rhs = &local_Wr[0][0];
+            if (i == 0) rhs = &local_U[0][0];
+            else if (i == 1) rhs = &local_V[0][0];
+            else rhs = &local_W[0][0];
 
             dgttrf_(&N, ld_copy, d_copy, ud_copy, uud, pivot, &info);
             if (info != 0) {
@@ -313,13 +331,13 @@ int main(int argc, char *argv[]) {
         }
 
 
-        // printf("after solve\n");
-        // for (int i = 0; i < N; ++i) {
-        //     for (int j = 0; j < local_N; ++j) {
-        //         printf("local_Ur[%d][%d]: %.10f | ", i, j, local_Ur[i][j]);
-        //     }
-        //     printf("\n");
-        // }
+        printf("after solve\n");
+        for (int i = 0; i < local_N; ++i) {
+            for (int j = 0; j < N; ++j) {
+                printf("local_Ur[%d][%d]: %.10f | ", i, j, local_U[i][j]);
+            }
+            printf("\n");
+        }
 
         // step 3 - explicit y update
         for (int i = 0; i < N; i++) {
