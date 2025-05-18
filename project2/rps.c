@@ -137,9 +137,6 @@ int main(int argc, char *argv[]) {
             local_W[i][j] = coeff * sigma;
         }
     }
-    
-    double (*D_x)[N] = malloc(sizeof(*D_x) * local_N);
-    double (*D_y)[N] = malloc(sizeof(*D_y) * local_N);
 
     // initialize subdiagonal, diagonal, and superdiagonal
     // (I - dt/2 * D_x) and (I - dt/2 * D_y)
@@ -148,49 +145,44 @@ int main(int argc, char *argv[]) {
     double* ud = malloc(N*sizeof(double));
     
     double dt2 = 0.5 * dt;
-    double (*D)[N] = NULL;
+    double (*D)[N] = malloc(sizeof(*D) * N);;
     double lambda = alpha / (dx*dx);
+
+    double D_init[N][N];
     // initialize D matrix and diagonals and broadcast
     if (rank == 0) {
-        D = malloc(sizeof(*D) * N);
-
         // first row
-        D[0][0] = -lambda;
-        D[0][1] = lambda;
+        D_init[0][0] = -lambda;
+        D_init[0][1] = lambda;
 
         // initialize interior
         for (int i = 1; i < N-1; i++) {
-            for (int j = i-1; j <= i+1; j++) {
+            for (int j = 0; j <= N; j++) {
                 if (i == j) {
-                    D[i][j] = -2*lambda;
+                    D_init[i][j] = -2*lambda;
                 } else if (i-1 == j || i+1 == j) {
-                    D[i][j] = lambda;
+                    D_init[i][j] = lambda;
+                } else {
+                    D_init[i][j] = 0;
                 }
             }
         }
 
         // last row
-        D[N-1][N-2] = lambda;
-        D[N-1][N-1] = -lambda;
+        D_init[N-1][N-2] = lambda;
+        D_init[N-1][N-1] = -lambda;
     }
 
     // scatter
-    MPI_Scatter(D, N*local_N, MPI_DOUBLE, D_x, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-    
-    // TODO: maybe allocate a another D 2d array and then call transpose_matrix to D
-    if (rank == 0) {
-        D[0][0] = lambda; D[0][1] = -lambda; D[N-1][N-2] = -lambda; D[N-1][N-1] = lambda; // transpose the matrix --> these act as a transpose
-    }
+    MPI_Scatter(&D_init, N*local_N, MPI_DOUBLE, D, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
-    MPI_Scatter(D, N*local_N, MPI_DOUBLE, D_y, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-
-    if (rank == 0) {
-        // initilaize the diagonals
-        for (int i = 0; i < N; i++) {
-            d[i] = 1 - dt2 * D[i][i];
+    if (rank == 0) {// initilaize the diagonals
+        double a = dt2 * lambda;          /*  a =  (Δt/2)·λ            */
+        for (int i = 0; i < N; ++i) {
+            d [i] = 1 + 2*a;               /* main diagonal: 1 – (-2λ)Δt/2 */
             if (i < N-1) {
-                ld[i] = dt2 * D[i+1][i]; 
-                ud[i] = dt2 * D[i][i+1];
+                ld[i] = -a;                /* sub- & super- diagonal: –λΔt/2 */
+                ud[i] = -a;
             }
         }
     }
@@ -201,7 +193,7 @@ int main(int argc, char *argv[]) {
 
     // initialize variables for explicit steps
     double rho_U; double rho_V; double rho_W;
-    double Uxx; double Vxx; double Wxx; double Uyy; double Vyy; double Wyy;
+    double U2; double V2; double W2;
 
     // initialize parameters for implicit steps
     double ld_copy[N], d_copy[N], ud_copy[N], uud[N];
@@ -216,36 +208,37 @@ int main(int argc, char *argv[]) {
                 rho_V = local_V[i][j] * (1 - local_V[i][j] - alpha * local_U[i][j]);
                 rho_W = local_W[i][j] * (1 - local_W[i][j] - alpha * local_V[i][j]);
                 if (j == 0) {
-                    Uxx = D_x[i][j] * local_U[i][j] + D_x[i][j+1] * local_U[i][j+1];
-                    Vxx = D_x[i][j] * local_V[i][j] + D_x[i][j+1] * local_V[i][j+1];
-                    Wxx = D_x[i][j] * local_W[i][j] + D_x[i][j+1] * local_W[i][j+1];
+                    U2 = D[i][j] * local_U[i][j] + D[i][j+1] * local_U[i][j+1];
+                    V2 = D[i][j] * local_V[i][j] + D[i][j+1] * local_V[i][j+1];
+                    W2 = D[i][j] * local_W[i][j] + D[i][j+1] * local_W[i][j+1];
                 } else if (j == N-1) {
-                    Uxx = D_x[i][j-1] * local_U[i][j-1] + D_x[i][j] * local_U[i][j];
-                    Vxx = D_x[i][j-1] * local_V[i][j-1] + D_x[i][j] * local_V[i][j];
-                    Wxx = D_x[i][j-1] * local_W[i][j-1] + D_x[i][j] * local_W[i][j];
+                    U2 = D[i][j-1] * local_U[i][j-1] + D[i][j] * local_U[i][j];
+                    V2 = D[i][j-1] * local_V[i][j-1] + D[i][j] * local_V[i][j];
+                    W2 = D[i][j-1] * local_W[i][j-1] + D[i][j] * local_W[i][j];
                 } else {
-                    Uxx = D_x[i][j-1] * local_U[i][j-1] + D_x[i][j] * local_U[i][j] + D_x[i][j+1] * local_U[i][j+1];
-                    Vxx = D_x[i][j-1] * local_V[i][j-1] + D_x[i][j] * local_V[i][j] + D_x[i][j+1] * local_V[i][j+1];
-                    Wxx = D_x[i][j-1] * local_W[i][j-1] + D_x[i][j] * local_W[i][j] + D_x[i][j+1] * local_W[i][j+1];
+                    U2 = D[i][j-1] * local_U[i][j-1] + D[i][j] * local_U[i][j] + D[i][j+1] * local_U[i][j+1];
+                    V2 = D[i][j-1] * local_V[i][j-1] + D[i][j] * local_V[i][j] + D[i][j+1] * local_V[i][j+1];
+                    W2 = D[i][j-1] * local_W[i][j-1] + D[i][j] * local_W[i][j] + D[i][j+1] * local_W[i][j+1];
                 }
                 
-                local_U[i][j] += dt2 * (Uxx + rho_U);
-                local_V[i][j] += dt2 * (Vxx + rho_V);
-                local_W[i][j] += dt2 * (Wxx + rho_W);
+                local_U[i][j] += dt2 * (U2 + rho_U);
+                local_V[i][j] += dt2 * (V2 + rho_V);
+                local_W[i][j] += dt2 * (W2 + rho_W);
             }
         }
 
-        // tranpose array
-        transpose_matrix(local_N, N, local_U, local_Ut);
-        transpose_matrix(local_N, N, local_V, local_Vt);
-        transpose_matrix(local_N, N, local_W, local_Wt);
-
+        printf("\nafter explicit step (step 1)\n");
         for (int i = 0; i < local_N; ++i) {
             for (int j = 0; j < N; ++j) {
                 printf("local_U[%d][%d]: %.3f | ", i, j, local_U[i][j]);
             }
             printf("\n");
         }
+
+        // tranpose array
+        transpose_matrix(local_N, N, local_U, local_Ut);
+        transpose_matrix(local_N, N, local_V, local_Vt);
+        transpose_matrix(local_N, N, local_W, local_Wt);
 
         printf("\n");
         for (int i = 0; i < N; ++i) {
@@ -257,41 +250,25 @@ int main(int argc, char *argv[]) {
         
         // blocking scatter + gather for all processes 
         int block = local_N * local_N;
-        // MPI_Scatter(local_Ut, block, MPI_DOUBLE, &local_Ur[rank*local_N][0], block, MPI_DOUBLE, rank, MPI_COMM_WORLD);
-        // MPI_Scatter(local_Vt, block, MPI_DOUBLE, &local_Vr[rank*local_N][0], block, MPI_DOUBLE, rank, MPI_COMM_WORLD);
-        // MPI_Scatter(local_Wt, block, MPI_DOUBLE, &local_Wr[rank*local_N][0], block, MPI_DOUBLE, rank, MPI_COMM_WORLD);
-
-        // flatten the 2d arrays into pointers for MPI
-        double *sendU = &local_Ut[0][0];
-        double *recvU = &local_Ur[0][0];
-        double *sendV = &local_Vt[0][0];
-        double *recvV = &local_Vr[0][0];
-        double *sendW = &local_Wt[0][0];
-        double *recvW = &local_Wr[0][0];
 
         // scatter + gather
-        MPI_Alltoall(sendU, block, MPI_DOUBLE, recvU, block, MPI_DOUBLE, MPI_COMM_WORLD);
-        MPI_Alltoall(sendV, block, MPI_DOUBLE, recvV, block, MPI_DOUBLE, MPI_COMM_WORLD);
-        MPI_Alltoall(sendW, block, MPI_DOUBLE, recvW, block, MPI_DOUBLE, MPI_COMM_WORLD);
+        MPI_Alltoall(&local_Ut[0][0], block, MPI_DOUBLE, &local_Ur[0][0], block, MPI_DOUBLE, MPI_COMM_WORLD);
+        MPI_Alltoall(&local_Vt[0][0], block, MPI_DOUBLE, &local_Vr[0][0], block, MPI_DOUBLE, MPI_COMM_WORLD);
+        MPI_Alltoall(&local_Wt[0][0], block, MPI_DOUBLE, &local_Wr[0][0], block, MPI_DOUBLE, MPI_COMM_WORLD);
 
-        printf("after gather\n");
+        printf("\nafter gather step 1\n");
         for (int i = 0; i < N; ++i) {
             for (int j = 0; j < local_N; ++j) {
                 printf("local_Ur[%d][%d]: %.3f | ", i, j, local_Ur[i][j]);
             }
             printf("\n");
         }
-        
-        // transpose each block in received buffer
-        // transpose_blocks(local_N, local_Ur, world_size);
-        // transpose_blocks(local_N, local_Vr, world_size);
-        // transpose_blocks(local_N, local_Wr, world_size);
 
         move_blocks(N, local_N, world_size, local_Ur, local_U);
         move_blocks(N, local_N, world_size, local_Vr, local_V);
         move_blocks(N, local_N, world_size, local_Wr, local_W);
 
-        printf("after moving blocks\n");
+        printf("\nafter moving blocks step 1\n");
         for (int i = 0; i < local_N; ++i) {
             for (int j = 0; j < N; ++j) {
                 printf("local_U[%d][%d]: %.3f | ", i, j, local_U[i][j]);
@@ -331,10 +308,10 @@ int main(int argc, char *argv[]) {
         }
 
 
-        printf("after solve\n");
+        printf("\nafter solve step 2\n");
         for (int i = 0; i < local_N; ++i) {
             for (int j = 0; j < N; ++j) {
-                printf("local_Ur[%d][%d]: %.10f | ", i, j, local_U[i][j]);
+                printf("local_Ur[%d][%d]: %.3f | ", i, j, local_U[i][j]);
             }
             printf("\n");
         }
@@ -342,16 +319,107 @@ int main(int argc, char *argv[]) {
         // step 3 - explicit y update
         for (int i = 0; i < N; i++) {
             for (int j = 0; j < local_N; j++) {
-                rho_U = local_Ur[i][j] * (1 - local_Ur[i][j] - alpha * local_Wr[i][j]);
-                rho_V = local_Vr[i][j] * (1 - local_Vr[i][j] - alpha * local_Ur[i][j]);
-                rho_W = local_Wr[i][j] * (1 - local_Wr[i][j] - alpha * local_Vr[i][j]);
-                // continue
+                rho_U = local_U[i][j] * (1 - local_U[i][j] - alpha * local_W[i][j]);
+                rho_V = local_V[i][j] * (1 - local_V[i][j] - alpha * local_U[i][j]);
+                rho_W = local_W[i][j] * (1 - local_W[i][j] - alpha * local_V[i][j]);
+                if (j == 0) {
+                    U2 = D[i][j] * local_U[i][j] + D[i][j+1] * local_U[i][j+1];
+                    V2 = D[i][j] * local_V[i][j] + D[i][j+1] * local_V[i][j+1];
+                    W2 = D[i][j] * local_W[i][j] + D[i][j+1] * local_W[i][j+1];
+                } else if (j == N-1) {
+                    U2 = D[i][j-1] * local_U[i][j-1] + D[i][j] * local_U[i][j];
+                    V2 = D[i][j-1] * local_V[i][j-1] + D[i][j] * local_V[i][j];
+                    W2 = D[i][j-1] * local_W[i][j-1] + D[i][j] * local_W[i][j];
+                } else {
+                    U2 = D[i][j-1] * local_U[i][j-1] + D[i][j] * local_U[i][j] + D[i][j+1] * local_U[i][j+1];
+                    V2 = D[i][j-1] * local_V[i][j-1] + D[i][j] * local_V[i][j] + D[i][j+1] * local_V[i][j+1];
+                    W2 = D[i][j-1] * local_W[i][j-1] + D[i][j] * local_W[i][j] + D[i][j+1] * local_W[i][j+1];
+                }
+                
+                local_U[i][j] += dt2 * (U2 + rho_U);
+                local_V[i][j] += dt2 * (V2 + rho_V);
+                local_W[i][j] += dt2 * (W2 + rho_W);
             }
         }
 
+        printf("\nafter explicit step (step 3)");
+        for (int i = 0; i < local_N; ++i) {
+            for (int j = 0; j < N; ++j) {
+                printf("local_U[%d][%d]: %.3f | ", i, j, local_U[i][j]);
+            }
+            printf("\n");
+        }
+
         // transpose array + MPI scatter
+        transpose_matrix(local_N, N, local_U, local_Ut);
+        transpose_matrix(local_N, N, local_V, local_Vt);
+        transpose_matrix(local_N, N, local_W, local_Wt);
+
+        printf("after transpose step 3\n");
+        for (int i = 0; i < N; ++i) {
+            for (int j = 0; j < local_N; ++j) {
+                printf("local_Ut[%d][%d]: %.3f | ", i, j, local_Ut[i][j]);
+            }
+            printf("\n");
+        }
+
+        // scatter + gather
+        MPI_Alltoall(&local_Ut[0][0], block, MPI_DOUBLE, &local_Ur[0][0], block, MPI_DOUBLE, MPI_COMM_WORLD);
+        MPI_Alltoall(&local_Vt[0][0], block, MPI_DOUBLE, &local_Vr[0][0], block, MPI_DOUBLE, MPI_COMM_WORLD);
+        MPI_Alltoall(&local_Wt[0][0], block, MPI_DOUBLE, &local_Wr[0][0], block, MPI_DOUBLE, MPI_COMM_WORLD);
+
+        printf("\nafter gather step 3\n");
+        for (int i = 0; i < N; ++i) {
+            for (int j = 0; j < local_N; ++j) {
+                printf("local_Ur[%d][%d]: %.3f | ", i, j, local_Ur[i][j]);
+            }
+            printf("\n");
+        }
+
+        move_blocks(N, local_N, world_size, local_Ur, local_U);
+        move_blocks(N, local_N, world_size, local_Vr, local_V);
+        move_blocks(N, local_N, world_size, local_Wr, local_W);
+
+        printf("\nafter moving blocks step 3\n");
+        for (int i = 0; i < local_N; ++i) {
+            for (int j = 0; j < N; ++j) {
+                printf("local_U[%d][%d]: %.3f | ", i, j, local_U[i][j]);
+            }
+            printf("\n");
+        }
 
         // step 4 implicit x update (using lapack)
+        for (int i = 0; i < 3; i++) {
+            printf("solve loop\n");
+            memcpy(ld_copy, ld, N * sizeof(double));
+            memcpy(d_copy, d, N * sizeof(double));
+            memcpy(ud_copy, ud, N * sizeof(double));
+
+            double *rhs;
+            if (i == 0) rhs = &local_U[0][0];
+            else if (i == 1) rhs = &local_V[0][0];
+            else rhs = &local_W[0][0];
+
+            dgttrf_(&N, ld_copy, d_copy, ud_copy, uud, pivot, &info);
+            if (info != 0) {
+                fprintf(stderr, "dgttrf_ failed with info = %d\n", info);
+                MPI_Abort(MPI_COMM_WORLD, -1);
+            }
+
+            dgttrs_(&tr, &N, &local_N, ld_copy, d_copy, ud_copy, uud, pivot, rhs, &N, &info);
+            if (info != 0) {
+                fprintf(stderr, "dgttrs_ failed with info = %d\n", info);
+                MPI_Abort(MPI_COMM_WORLD, -1); 
+            }
+        }
+
+        printf("after solve step 4\n");
+        for (int i = 0; i < local_N; ++i) {
+            for (int j = 0; j < N; ++j) {
+                printf("local_U[%d][%d]: %.3f | ", i, j, local_U[i][j]);
+            }
+            printf("\n");
+        }
     }
     
     double (*U)[N] = NULL;
@@ -425,8 +493,7 @@ int main(int argc, char *argv[]) {
     free(local_Ur);
     free(local_Vr);
     free(local_Wr);
-    free(D_x);
-    free(D_y);
+    free(D);
     free(ld);
     free(d);
     free(ud);
@@ -435,7 +502,6 @@ int main(int argc, char *argv[]) {
         free(U);
         free(V);
         free(W);
-        free(D);
     }
 
     MPI_Finalize();
