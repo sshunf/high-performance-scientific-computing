@@ -88,7 +88,7 @@ int main(int argc, char *argv[]) {
     // initialize step sizes for x, y, t
     double dx = 2.0*L / (N - 1.0);
     double dy = dx;
-    double dt = M / 200; // T = 200
+    double dt = (double) M / 200; // T = 200
     
     // get the MPI info (number of processes and rank)
     int world_size, rank;
@@ -123,6 +123,7 @@ int main(int argc, char *argv[]) {
     double (*local_Vr)[local_N] = malloc(sizeof(*local_Vr) * N);
     double (*local_Wr)[local_N] = malloc(sizeof(*local_Wr) * N);
 
+    printf("\ninitialization of local_U\n");
     // set initial conditions
     for (int i = 0; i < local_N; i++) {
         for (int j = 0; j < N; j++) {
@@ -135,7 +136,10 @@ int main(int argc, char *argv[]) {
 
             sigma = (double)rand() / RAND_MAX;
             local_W[i][j] = coeff * sigma;
+
+            printf("local_U[%d][%d]: %.2f | ", i, j, local_U[i][j]);
         }
+        printf("\n");
     }
 
     // initialize subdiagonal, diagonal, and superdiagonal
@@ -152,25 +156,12 @@ int main(int argc, char *argv[]) {
     // initialize D matrix and diagonals and broadcast
     if (rank == 0) {
         // first row
-        D_init[0][0] = -lambda;
-        D_init[0][1] = lambda;
-
-        // initialize interior
-        for (int i = 1; i < N-1; i++) {
-            for (int j = 0; j <= N; j++) {
-                if (i == j) {
-                    D_init[i][j] = -2*lambda;
-                } else if (i-1 == j || i+1 == j) {
-                    D_init[i][j] = lambda;
-                } else {
-                    D_init[i][j] = 0;
-                }
-            }
+        memset(D_init, 0, sizeof D_init);
+        for (int i = 0; i < N; ++i) {
+            D_init[i][i] = -2.0 * lambda;
+            if (i > 0)   D_init[i][i-1] = lambda;
+            if (i < N-1) D_init[i][i+1] = lambda;
         }
-
-        // last row
-        D_init[N-1][N-2] = lambda;
-        D_init[N-1][N-1] = -lambda;
     }
 
     // scatter
@@ -179,7 +170,7 @@ int main(int argc, char *argv[]) {
     if (rank == 0) {// initilaize the diagonals
         double a = dt2 * lambda;          /*  a =  (Δt/2)·λ            */
         for (int i = 0; i < N; ++i) {
-            d [i] = 1 + 2*a;               /* main diagonal: 1 – (-2λ)Δt/2 */
+            d[i] = 1 + 2*a;               /* main diagonal: 1 – (-2λ)Δt/2 */
             if (i < N-1) {
                 ld[i] = -a;                /* sub- & super- diagonal: –λΔt/2 */
                 ud[i] = -a;
@@ -200,7 +191,7 @@ int main(int argc, char *argv[]) {
     int pivot[N];
 
     // start the time step loop
-    for (int t = 0; t < M; t++) {
+    for (int t = 0; t < 20; t++) { // TODO: change this back to M iterations
         for (int i = 0; i < local_N; i++) {
             // step 1 - explicit x update for U, V, W
             for (int j = 0; j < N; j++) {
@@ -311,14 +302,14 @@ int main(int argc, char *argv[]) {
         printf("\nafter solve step 2\n");
         for (int i = 0; i < local_N; ++i) {
             for (int j = 0; j < N; ++j) {
-                printf("local_Ur[%d][%d]: %.3f | ", i, j, local_U[i][j]);
+                printf("local_U[%d][%d]: %.3f | ", i, j, local_U[i][j]);
             }
             printf("\n");
         }
 
         // step 3 - explicit y update
-        for (int i = 0; i < N; i++) {
-            for (int j = 0; j < local_N; j++) {
+        for (int i = 0; i < local_N; i++) {
+            for (int j = 0; j < N; j++) {
                 rho_U = local_U[i][j] * (1 - local_U[i][j] - alpha * local_W[i][j]);
                 rho_V = local_V[i][j] * (1 - local_V[i][j] - alpha * local_U[i][j]);
                 rho_W = local_W[i][j] * (1 - local_W[i][j] - alpha * local_V[i][j]);
@@ -342,7 +333,7 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        printf("\nafter explicit step (step 3)");
+        printf("\nafter explicit step (step 3)\n");
         for (int i = 0; i < local_N; ++i) {
             for (int j = 0; j < N; ++j) {
                 printf("local_U[%d][%d]: %.3f | ", i, j, local_U[i][j]);
