@@ -88,7 +88,7 @@ int main(int argc, char *argv[]) {
     // initialize step sizes for x, y, t
     double dx = 2.0*L / (N - 1.0);
     double T = 200.0;
-    double dt = T / M; // T = 200
+    double dt = T / M;
     
     // get the MPI info (number of processes and rank)
     int world_size, rank;
@@ -125,10 +125,10 @@ int main(int argc, char *argv[]) {
 
     // printf("\ninitialization of local_U\n");
     // set initial conditions
+    double coeff = 1.0 / (1 + alpha); 
     for (int i = 0; i < local_N; i++) {
         for (int j = 0; j < N; j++) {
             sigma = (double)rand() / RAND_MAX;
-            double coeff = 1.0 / (1 + alpha);
             local_U[i][j] = coeff * sigma;
 
             sigma = (double)rand() / RAND_MAX;
@@ -160,8 +160,8 @@ int main(int argc, char *argv[]) {
                 ud[i] = -a;
             }
         }
-        ud[0] *= 2; // boundary conditions
-        ld[N-1] *= 2; 
+        // ud[0] *= 2; // boundary conditions
+        // ld[N-2] *= 2; 
     }
     // broadcast of d, ld, ud
     MPI_Bcast(d, N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
@@ -176,29 +176,35 @@ int main(int argc, char *argv[]) {
     double ld_copy[N], d_copy[N], ud_copy[N], uud[N];
     int pivot[N];
 
-    double diag = -2 * lambda;
+    double diag = -lambda;
 
     // initialize 2d grid for gathering
     double (*U)[N] = NULL;
     double (*V)[N] = NULL;
     double (*W)[N] = NULL;
 
-    // MPI Gather to rank 0
+    // initialize solver parameters
+    char tr = 'N';
+    int nrhs = local_N;
+    int ldb  = N;
+    double *rhs_list[3] = { &local_U[0][0], &local_V[0][0], &local_W[0][0] };
+
+    // MPI Gather to rank 0 to write initial state to files
     if (rank == 0) {
         U = malloc(N*sizeof(*U));
         V = malloc(N*sizeof(*V));
         W = malloc(N*sizeof(*W));
     }
 
-    MPI_Gather(local_U,N*local_N,MPI_DOUBLE,U,N*local_N,MPI_DOUBLE,0,MPI_COMM_WORLD);
-    MPI_Gather(local_V,N*local_N,MPI_DOUBLE,V,N*local_N,MPI_DOUBLE,0,MPI_COMM_WORLD);
-    MPI_Gather(local_W,N*local_N,MPI_DOUBLE,W,N*local_N,MPI_DOUBLE,0,MPI_COMM_WORLD);
+    MPI_Gather(local_U, N*local_N,MPI_DOUBLE, U, N*local_N,MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    MPI_Gather(local_V, N*local_N,MPI_DOUBLE, V, N*local_N,MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    MPI_Gather(local_W, N*local_N,MPI_DOUBLE, W, N*local_N,MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
-    if (rank==0) {
+    if (rank == 0) {
         FILE *f;
-        f=fopen("RPSU.out","wb"); fwrite(U,sizeof(double),N*N,f); fclose(f);
-        f=fopen("RPSV.out","wb"); fwrite(V,sizeof(double),N*N,f); fclose(f);
-        f=fopen("RPSW.out","wb"); fwrite(W,sizeof(double),N*N,f); fclose(f);
+        f=fopen("RPSU.out","wb"); fwrite(U, sizeof(double), N*N, f); fclose(f);
+        f=fopen("RPSV.out","wb"); fwrite(V, sizeof(double), N*N, f); fclose(f);
+        f=fopen("RPSW.out","wb"); fwrite(W, sizeof(double), N*N, f); fclose(f);
     }
 
 
@@ -281,32 +287,23 @@ int main(int argc, char *argv[]) {
 
         // step 2 - implicit y update
 
-        // make a copy of ld, d, ud
+        memcpy(ld_copy, ld, N*sizeof(double));
+        memcpy(d_copy , d , N*sizeof(double));
+        memcpy(ud_copy, ud, N*sizeof(double));
+
         int info;
-        char tr = 'N';
 
-        // for each RHS matrix (bU, bV, bW), refactor A and solve
-        for (int i = 0; i < 3; i++) {
-            // printf("solve loop\n");
-            memcpy(ld_copy, ld, N * sizeof(double));
-            memcpy(d_copy, d, N * sizeof(double));
-            memcpy(ud_copy, ud, N * sizeof(double));
+        dgttrf_(&N, ld_copy, d_copy, ud_copy, uud, pivot, &info);
+        if (info != 0) {
+            fprintf(stderr,"dgttrf failed (info=%d)\n",info);
+            MPI_Abort(MPI_COMM_WORLD,-1);
+        }
 
-            double *rhs;
-            if (i == 0) rhs = &local_U[0][0];
-            else if (i == 1) rhs = &local_V[0][0];
-            else rhs = &local_W[0][0];
-
-            dgttrf_(&N, ld_copy, d_copy, ud_copy, uud, pivot, &info);
+        for (int s=0; s<3; ++s) {
+            dgttrs_(&tr, &N, &nrhs, ld_copy, d_copy, ud_copy, uud, pivot, rhs_list[s], &ldb, &info);
             if (info != 0) {
-                fprintf(stderr, "dgttrf_ failed with info = %d\n", info);
-                MPI_Abort(MPI_COMM_WORLD, -1);
-            }
-
-            dgttrs_(&tr, &N, &local_N, ld_copy, d_copy, ud_copy, uud, pivot, rhs, &N, &info);
-            if (info != 0) {
-                fprintf(stderr, "dgttrs_ failed with info = %d\n", info);
-                MPI_Abort(MPI_COMM_WORLD, -1); 
+                fprintf(stderr,"dgttrs failed (species %d, info=%d)\n",s,info);
+                MPI_Abort(MPI_COMM_WORLD,-1);
             }
         }
 
@@ -392,27 +389,21 @@ int main(int argc, char *argv[]) {
         // }
 
         // step 4 implicit x update (using lapack)
-        for (int i = 0; i < 3; i++) {
-            // printf("solve loop\n");
-            memcpy(ld_copy, ld, N * sizeof(double));
-            memcpy(d_copy, d, N * sizeof(double));
-            memcpy(ud_copy, ud, N * sizeof(double));
+        memcpy(ld_copy, ld, N*sizeof(double));
+        memcpy(d_copy , d , N*sizeof(double));
+        memcpy(ud_copy, ud, N*sizeof(double));
 
-            double *rhs;
-            if (i == 0) rhs = &local_U[0][0];
-            else if (i == 1) rhs = &local_V[0][0];
-            else rhs = &local_W[0][0];
+        dgttrf_(&N, ld_copy, d_copy, ud_copy, uud, pivot, &info);
+        if (info != 0) {
+            fprintf(stderr,"dgttrf failed (info=%d)\n",info);
+            MPI_Abort(MPI_COMM_WORLD,-1);
+        }
 
-            dgttrf_(&N, ld_copy, d_copy, ud_copy, uud, pivot, &info);
+        for (int s=0; s<3; ++s) {
+            dgttrs_(&tr, &N, &nrhs, ld_copy, d_copy, ud_copy, uud, pivot, rhs_list[s], &ldb, &info);
             if (info != 0) {
-                fprintf(stderr, "dgttrf_ failed with info = %d\n", info);
-                MPI_Abort(MPI_COMM_WORLD, -1);
-            }
-
-            dgttrs_(&tr, &N, &local_N, ld_copy, d_copy, ud_copy, uud, pivot, rhs, &N, &info);
-            if (info != 0) {
-                fprintf(stderr, "dgttrs_ failed with info = %d\n", info);
-                MPI_Abort(MPI_COMM_WORLD, -1); 
+                fprintf(stderr,"dgttrs failed (species %d, info=%d)\n",s,info);
+                MPI_Abort(MPI_COMM_WORLD,-1);
             }
         }
 
