@@ -87,7 +87,6 @@ int main(int argc, char *argv[]) {
 
     // initialize step sizes for x, y, t
     double dx = 2.0*L / (N - 1.0);
-    double dy = dx;
     double T = 200.0;
     double dt = T / M; // T = 200
     
@@ -124,7 +123,7 @@ int main(int argc, char *argv[]) {
     double (*local_Vr)[local_N] = malloc(sizeof(*local_Vr) * N);
     double (*local_Wr)[local_N] = malloc(sizeof(*local_Wr) * N);
 
-    printf("\ninitialization of local_U\n");
+    // printf("\ninitialization of local_U\n");
     // set initial conditions
     for (int i = 0; i < local_N; i++) {
         for (int j = 0; j < N; j++) {
@@ -138,9 +137,9 @@ int main(int argc, char *argv[]) {
             sigma = (double)rand() / RAND_MAX;
             local_W[i][j] = coeff * sigma;
 
-            printf("local_U[%d][%d]: %.2f | ", i, j, local_U[i][j]);
+            // printf("local_U[%d][%d]: %.2f | ", i, j, local_U[i][j]);
         }
-        printf("\n");
+        // printf("\n");
     }
 
     // initialize subdiagonal, diagonal, and superdiagonal
@@ -179,8 +178,32 @@ int main(int argc, char *argv[]) {
 
     double diag = -2 * lambda;
 
+    // initialize 2d grid for gathering
+    double (*U)[N] = NULL;
+    double (*V)[N] = NULL;
+    double (*W)[N] = NULL;
+
+    // MPI Gather to rank 0
+    if (rank == 0) {
+        U = malloc(N*sizeof(*U));
+        V = malloc(N*sizeof(*V));
+        W = malloc(N*sizeof(*W));
+    }
+
+    MPI_Gather(local_U,N*local_N,MPI_DOUBLE,U,N*local_N,MPI_DOUBLE,0,MPI_COMM_WORLD);
+    MPI_Gather(local_V,N*local_N,MPI_DOUBLE,V,N*local_N,MPI_DOUBLE,0,MPI_COMM_WORLD);
+    MPI_Gather(local_W,N*local_N,MPI_DOUBLE,W,N*local_N,MPI_DOUBLE,0,MPI_COMM_WORLD);
+
+    if (rank==0) {
+        FILE *f;
+        f=fopen("RPSU.out","wb"); fwrite(U,sizeof(double),N*N,f); fclose(f);
+        f=fopen("RPSV.out","wb"); fwrite(V,sizeof(double),N*N,f); fclose(f);
+        f=fopen("RPSW.out","wb"); fwrite(W,sizeof(double),N*N,f); fclose(f);
+    }
+
+
     // start the time step loop
-    for (int t = 0; t < M; t++) { // TODO: change this back to M iterations
+    for (int t = 1; t <= M; t++) {
         for (int i = 0; i < local_N; i++) {
             // step 1 - explicit x update for U, V, W
             for (int j = 0; j < N; j++) {
@@ -207,26 +230,26 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        printf("\nafter explicit step (step 1)\n");
-        for (int i = 0; i < local_N; ++i) {
-            for (int j = 0; j < N; ++j) {
-                printf("local_U[%d][%d]: %.3f | ", i, j, local_U[i][j]);
-            }
-            printf("\n");
-        }
+        // printf("\nafter explicit step (step 1)\n");
+        // for (int i = 0; i < local_N; ++i) {
+        //     for (int j = 0; j < N; ++j) {
+        //         printf("local_U[%d][%d]: %.3f | ", i, j, local_U[i][j]);
+        //     }
+        //     printf("\n");
+        // }
 
         // tranpose array
         transpose_matrix(local_N, N, local_U, local_Ut);
         transpose_matrix(local_N, N, local_V, local_Vt);
         transpose_matrix(local_N, N, local_W, local_Wt);
 
-        printf("\n");
-        for (int i = 0; i < N; ++i) {
-            for (int j = 0; j < local_N; ++j) {
-                printf("local_Ut[%d][%d]: %.3f | ", i, j, local_Ut[i][j]);
-            }
-            printf("\n");
-        }
+        // printf("\n");
+        // for (int i = 0; i < N; ++i) {
+        //     for (int j = 0; j < local_N; ++j) {
+        //         printf("local_Ut[%d][%d]: %.3f | ", i, j, local_Ut[i][j]);
+        //     }
+        //     printf("\n");
+        // }
         
         // blocking scatter + gather for all processes 
         int block = local_N * local_N;
@@ -236,27 +259,27 @@ int main(int argc, char *argv[]) {
         MPI_Alltoall(&local_Vt[0][0], block, MPI_DOUBLE, &local_Vr[0][0], block, MPI_DOUBLE, MPI_COMM_WORLD);
         MPI_Alltoall(&local_Wt[0][0], block, MPI_DOUBLE, &local_Wr[0][0], block, MPI_DOUBLE, MPI_COMM_WORLD);
 
-        printf("\nafter gather step 1\n");
-        for (int i = 0; i < N; ++i) {
-            for (int j = 0; j < local_N; ++j) {
-                printf("local_Ur[%d][%d]: %.3f | ", i, j, local_Ur[i][j]);
-            }
-            printf("\n");
-        }
+        // printf("\nafter gather step 1\n");
+        // for (int i = 0; i < N; ++i) {
+        //     for (int j = 0; j < local_N; ++j) {
+        //         printf("local_Ur[%d][%d]: %.3f | ", i, j, local_Ur[i][j]);
+        //     }
+        //     printf("\n");
+        // }
 
         move_blocks(N, local_N, world_size, local_Ur, local_U);
         move_blocks(N, local_N, world_size, local_Vr, local_V);
         move_blocks(N, local_N, world_size, local_Wr, local_W);
 
-        printf("\nafter moving blocks step 1\n");
-        for (int i = 0; i < local_N; ++i) {
-            for (int j = 0; j < N; ++j) {
-                printf("local_U[%d][%d]: %.3f | ", i, j, local_U[i][j]);
-            }
-            printf("\n");
-        }
+        // printf("\nafter moving blocks step 1\n");
+        // for (int i = 0; i < local_N; ++i) {
+        //     for (int j = 0; j < N; ++j) {
+        //         printf("local_U[%d][%d]: %.3f | ", i, j, local_U[i][j]);
+        //     }
+        //     printf("\n");
+        // }
 
-        // step 2 - implicit y update (using lapack)
+        // step 2 - implicit y update
 
         // make a copy of ld, d, ud
         int info;
@@ -264,7 +287,7 @@ int main(int argc, char *argv[]) {
 
         // for each RHS matrix (bU, bV, bW), refactor A and solve
         for (int i = 0; i < 3; i++) {
-            printf("solve loop\n");
+            // printf("solve loop\n");
             memcpy(ld_copy, ld, N * sizeof(double));
             memcpy(d_copy, d, N * sizeof(double));
             memcpy(ud_copy, ud, N * sizeof(double));
@@ -288,13 +311,13 @@ int main(int argc, char *argv[]) {
         }
 
 
-        printf("\nafter solve step 2\n");
-        for (int i = 0; i < local_N; ++i) {
-            for (int j = 0; j < N; ++j) {
-                printf("local_U[%d][%d]: %.3f | ", i, j, local_U[i][j]);
-            }
-            printf("\n");
-        }
+        // printf("\nafter solve step 2\n");
+        // for (int i = 0; i < local_N; ++i) {
+        //     for (int j = 0; j < N; ++j) {
+        //         printf("local_U[%d][%d]: %.3f | ", i, j, local_U[i][j]);
+        //     }
+        //     printf("\n");
+        // }
 
         // step 3 - explicit y update
         for (int i = 0; i < local_N; i++) {
@@ -322,55 +345,55 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        printf("\nafter explicit step (step 3)\n");
-        for (int i = 0; i < local_N; ++i) {
-            for (int j = 0; j < N; ++j) {
-                printf("local_U[%d][%d]: %.3f | ", i, j, local_U[i][j]);
-            }
-            printf("\n");
-        }
+        // printf("\nafter explicit step (step 3)\n");
+        // for (int i = 0; i < local_N; ++i) {
+        //     for (int j = 0; j < N; ++j) {
+        //         printf("local_U[%d][%d]: %.3f | ", i, j, local_U[i][j]);
+        //     }
+        //     printf("\n");
+        // }
 
         // transpose array + MPI scatter
         transpose_matrix(local_N, N, local_U, local_Ut);
         transpose_matrix(local_N, N, local_V, local_Vt);
         transpose_matrix(local_N, N, local_W, local_Wt);
 
-        printf("after transpose step 3\n");
-        for (int i = 0; i < N; ++i) {
-            for (int j = 0; j < local_N; ++j) {
-                printf("local_Ut[%d][%d]: %.3f | ", i, j, local_Ut[i][j]);
-            }
-            printf("\n");
-        }
+        // printf("after transpose step 3\n");
+        // for (int i = 0; i < N; ++i) {
+        //     for (int j = 0; j < local_N; ++j) {
+        //         printf("local_Ut[%d][%d]: %.3f | ", i, j, local_Ut[i][j]);
+        //     }
+        //     printf("\n");
+        // }
 
         // scatter + gather
         MPI_Alltoall(&local_Ut[0][0], block, MPI_DOUBLE, &local_Ur[0][0], block, MPI_DOUBLE, MPI_COMM_WORLD);
         MPI_Alltoall(&local_Vt[0][0], block, MPI_DOUBLE, &local_Vr[0][0], block, MPI_DOUBLE, MPI_COMM_WORLD);
         MPI_Alltoall(&local_Wt[0][0], block, MPI_DOUBLE, &local_Wr[0][0], block, MPI_DOUBLE, MPI_COMM_WORLD);
 
-        printf("\nafter gather step 3\n");
-        for (int i = 0; i < N; ++i) {
-            for (int j = 0; j < local_N; ++j) {
-                printf("local_Ur[%d][%d]: %.3f | ", i, j, local_Ur[i][j]);
-            }
-            printf("\n");
-        }
+        // printf("\nafter gather step 3\n");
+        // for (int i = 0; i < N; ++i) {
+        //     for (int j = 0; j < local_N; ++j) {
+        //         printf("local_Ur[%d][%d]: %.3f | ", i, j, local_Ur[i][j]);
+        //     }
+        //     printf("\n");
+        // }
 
         move_blocks(N, local_N, world_size, local_Ur, local_U);
         move_blocks(N, local_N, world_size, local_Vr, local_V);
         move_blocks(N, local_N, world_size, local_Wr, local_W);
 
-        printf("\nafter moving blocks step 3\n");
-        for (int i = 0; i < local_N; ++i) {
-            for (int j = 0; j < N; ++j) {
-                printf("local_U[%d][%d]: %.3f | ", i, j, local_U[i][j]);
-            }
-            printf("\n");
-        }
+        // printf("\nafter moving blocks step 3\n");
+        // for (int i = 0; i < local_N; ++i) {
+        //     for (int j = 0; j < N; ++j) {
+        //         printf("local_U[%d][%d]: %.3f | ", i, j, local_U[i][j]);
+        //     }
+        //     printf("\n");
+        // }
 
         // step 4 implicit x update (using lapack)
         for (int i = 0; i < 3; i++) {
-            printf("solve loop\n");
+            // printf("solve loop\n");
             memcpy(ld_copy, ld, N * sizeof(double));
             memcpy(d_copy, d, N * sizeof(double));
             memcpy(ud_copy, ud, N * sizeof(double));
@@ -393,75 +416,67 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        printf("after solve step 4\n");
-        for (int i = 0; i < local_N; ++i) {
-            for (int j = 0; j < N; ++j) {
-                printf("local_U[%d][%d]: %.3f | ", i, j, local_U[i][j]);
-            }
-            printf("\n");
+        // printf("after solve step 4\n");
+        // for (int i = 0; i < local_N; ++i) {
+        //     for (int j = 0; j < N; ++j) {
+        //         printf("local_U[%d][%d]: %.3f | ", i, j, local_U[i][j]);
+        //     }
+        //     printf("\n");
+        // }
+
+        // gather to write to files
+        MPI_Gather(local_U, N*local_N, MPI_DOUBLE, U, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        MPI_Gather(local_V, N*local_N, MPI_DOUBLE, V, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        MPI_Gather(local_W, N*local_N, MPI_DOUBLE, W, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+        if (rank == 0 && (t % (M / 10)) == 0) {
+            FILE *fU = fopen("RPSU.out", "ab");
+            fwrite(U, sizeof(double), N * N, fU);
+            fclose(fU);
+        
+            FILE *fV = fopen("RPSV.out", "ab");
+            fwrite(V, sizeof(double), N * N, fV);
+            fclose(fV);
+        
+            FILE *fW = fopen("RPSW.out", "ab");
+            fwrite(W, sizeof(double), N * N, fW);
+            fclose(fW);
         }
     }
     
-    double (*U)[N] = NULL;
-    double (*V)[N] = NULL;
-    double (*W)[N] = NULL;
-
-    // MPI Gather to rank 0
-    if (rank == 0) {
-        U = malloc(N*sizeof(*U));
-        V = malloc(N*sizeof(*V));
-        W = malloc(N*sizeof(*W));
-    }
-
-    MPI_Gather(local_U, N*local_N, MPI_DOUBLE, U, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-    MPI_Gather(local_V, N*local_N, MPI_DOUBLE, V, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-    MPI_Gather(local_W, N*local_N, MPI_DOUBLE, W, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     
-    // write result to files
-    // FILE *fU = fopen("RPSU.out", "wb");
-    // fwrite(U, sizeof(double), N*N, fU);
-    // fclose(fU);
 
-    // FILE *fV = fopen("RPSV.out", "wb");
-    // fwrite(V, sizeof(double), N*N, fV);
-    // fclose(fU);
+    // if (rank == 0) {
+    //     // Write U to text file
+    //     FILE *fU = fopen("RPSU.txt", "w");
+    //     for (int i = 0; i < N; i++) {
+    //         for (int j = 0; j < N; j++) {
+    //             fprintf(fU, "%.10f ", U[i][j]);
+    //         }
+    //         fprintf(fU, "\n");
+    //     }
+    //     fclose(fU);
 
-    // FILE *fW = fopen("RSPW.out", "wb");
-    // fwrite(W, sizeof(double), N*N, fW);
-    // fclose(fW);
+    //     // Write V to text file
+    //     FILE *fV = fopen("RPSV.txt", "w");
+    //     for (int i = 0; i < N; i++) {
+    //         for (int j = 0; j < N; j++) {
+    //             fprintf(fV, "%.10f ", V[i][j]);
+    //         }
+    //         fprintf(fV, "\n");
+    //     }
+    //     fclose(fV);
 
-
-    if (rank == 0) {
-        // Write U to text file
-        FILE *fU = fopen("RPSU.txt", "w");
-        for (int i = 0; i < N; i++) {
-            for (int j = 0; j < N; j++) {
-                fprintf(fU, "%.10f ", U[i][j]);
-            }
-            fprintf(fU, "\n");
-        }
-        fclose(fU);
-
-        // Write V to text file
-        FILE *fV = fopen("RPSV.txt", "w");
-        for (int i = 0; i < N; i++) {
-            for (int j = 0; j < N; j++) {
-                fprintf(fV, "%.10f ", V[i][j]);
-            }
-            fprintf(fV, "\n");
-        }
-        fclose(fV);
-
-        // Write W to text file
-        FILE *fW = fopen("RPSW.txt", "w");
-        for (int i = 0; i < N; i++) {
-            for (int j = 0; j < N; j++) {
-                fprintf(fW, "%.10f ", W[i][j]);
-            }
-            fprintf(fW, "\n");
-        }
-        fclose(fW);
-    }
+    //     // Write W to text file
+    //     FILE *fW = fopen("RPSW.txt", "w");
+    //     for (int i = 0; i < N; i++) {
+    //         for (int j = 0; j < N; j++) {
+    //             fprintf(fW, "%.10f ", W[i][j]);
+    //         }
+    //         fprintf(fW, "\n");
+    //     }
+    //     fclose(fW);
+    // }
     
     // free memory
     free(local_U);
