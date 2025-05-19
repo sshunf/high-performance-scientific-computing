@@ -88,7 +88,8 @@ int main(int argc, char *argv[]) {
     // initialize step sizes for x, y, t
     double dx = 2.0*L / (N - 1.0);
     double dy = dx;
-    double dt = (double) M / 200; // T = 200
+    double T = 200.0;
+    double dt = T / M; // T = 200
     
     // get the MPI info (number of processes and rank)
     int world_size, rank;
@@ -149,23 +150,7 @@ int main(int argc, char *argv[]) {
     double* ud = malloc(N*sizeof(double));
     
     double dt2 = 0.5 * dt;
-    double (*D)[N] = malloc(sizeof(*D) * N);;
     double lambda = alpha / (dx*dx);
-
-    double D_init[N][N];
-    // initialize D matrix and diagonals and broadcast
-    if (rank == 0) {
-        // first row
-        memset(D_init, 0, sizeof D_init);
-        for (int i = 0; i < N; ++i) {
-            D_init[i][i] = -2.0 * lambda;
-            if (i > 0)   D_init[i][i-1] = lambda;
-            if (i < N-1) D_init[i][i+1] = lambda;
-        }
-    }
-
-    // scatter
-    MPI_Scatter(&D_init, N*local_N, MPI_DOUBLE, D, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
     if (rank == 0) {// initilaize the diagonals
         double a = dt2 * lambda;          /*  a =  (Δt/2)·λ            */
@@ -176,6 +161,8 @@ int main(int argc, char *argv[]) {
                 ud[i] = -a;
             }
         }
+        ud[0] *= 2; // boundary conditions
+        ld[N-1] *= 2; 
     }
     // broadcast of d, ld, ud
     MPI_Bcast(d, N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
@@ -190,8 +177,10 @@ int main(int argc, char *argv[]) {
     double ld_copy[N], d_copy[N], ud_copy[N], uud[N];
     int pivot[N];
 
+    double diag = -2 * lambda;
+
     // start the time step loop
-    for (int t = 0; t < 20; t++) { // TODO: change this back to M iterations
+    for (int t = 0; t < M; t++) { // TODO: change this back to M iterations
         for (int i = 0; i < local_N; i++) {
             // step 1 - explicit x update for U, V, W
             for (int j = 0; j < N; j++) {
@@ -199,17 +188,17 @@ int main(int argc, char *argv[]) {
                 rho_V = local_V[i][j] * (1 - local_V[i][j] - alpha * local_U[i][j]);
                 rho_W = local_W[i][j] * (1 - local_W[i][j] - alpha * local_V[i][j]);
                 if (j == 0) {
-                    U2 = D[i][j] * local_U[i][j] + D[i][j+1] * local_U[i][j+1];
-                    V2 = D[i][j] * local_V[i][j] + D[i][j+1] * local_V[i][j+1];
-                    W2 = D[i][j] * local_W[i][j] + D[i][j+1] * local_W[i][j+1];
+                    U2 = diag * local_U[i][j] + -diag * local_U[i][j+1];
+                    V2 = diag * local_V[i][j] + -diag * local_V[i][j+1];
+                    W2 = diag * local_W[i][j] + -diag * local_W[i][j+1];
                 } else if (j == N-1) {
-                    U2 = D[i][j-1] * local_U[i][j-1] + D[i][j] * local_U[i][j];
-                    V2 = D[i][j-1] * local_V[i][j-1] + D[i][j] * local_V[i][j];
-                    W2 = D[i][j-1] * local_W[i][j-1] + D[i][j] * local_W[i][j];
+                    U2 = -diag * local_U[i][j-1] + diag * local_U[i][j];
+                    V2 = -diag * local_V[i][j-1] + diag * local_V[i][j];
+                    W2 = -diag * local_W[i][j-1] + diag * local_W[i][j];
                 } else {
-                    U2 = D[i][j-1] * local_U[i][j-1] + D[i][j] * local_U[i][j] + D[i][j+1] * local_U[i][j+1];
-                    V2 = D[i][j-1] * local_V[i][j-1] + D[i][j] * local_V[i][j] + D[i][j+1] * local_V[i][j+1];
-                    W2 = D[i][j-1] * local_W[i][j-1] + D[i][j] * local_W[i][j] + D[i][j+1] * local_W[i][j+1];
+                    U2 = lambda * local_U[i][j-1] + diag * local_U[i][j] + lambda * local_U[i][j+1];
+                    V2 = lambda * local_V[i][j-1] + diag * local_V[i][j] + lambda * local_V[i][j+1];
+                    W2 = lambda * local_W[i][j-1] + diag * local_W[i][j] + lambda * local_W[i][j+1];
                 }
                 
                 local_U[i][j] += dt2 * (U2 + rho_U);
@@ -314,17 +303,17 @@ int main(int argc, char *argv[]) {
                 rho_V = local_V[i][j] * (1 - local_V[i][j] - alpha * local_U[i][j]);
                 rho_W = local_W[i][j] * (1 - local_W[i][j] - alpha * local_V[i][j]);
                 if (j == 0) {
-                    U2 = D[i][j] * local_U[i][j] + D[i][j+1] * local_U[i][j+1];
-                    V2 = D[i][j] * local_V[i][j] + D[i][j+1] * local_V[i][j+1];
-                    W2 = D[i][j] * local_W[i][j] + D[i][j+1] * local_W[i][j+1];
+                    U2 = diag * local_U[i][j] + -diag * local_U[i][j+1];
+                    V2 = diag * local_V[i][j] + -diag * local_V[i][j+1];
+                    W2 = diag * local_W[i][j] + -diag * local_W[i][j+1];
                 } else if (j == N-1) {
-                    U2 = D[i][j-1] * local_U[i][j-1] + D[i][j] * local_U[i][j];
-                    V2 = D[i][j-1] * local_V[i][j-1] + D[i][j] * local_V[i][j];
-                    W2 = D[i][j-1] * local_W[i][j-1] + D[i][j] * local_W[i][j];
+                    U2 = -diag * local_U[i][j-1] + diag * local_U[i][j];
+                    V2 = -diag * local_V[i][j-1] + diag * local_V[i][j];
+                    W2 = -diag * local_W[i][j-1] + diag * local_W[i][j];
                 } else {
-                    U2 = D[i][j-1] * local_U[i][j-1] + D[i][j] * local_U[i][j] + D[i][j+1] * local_U[i][j+1];
-                    V2 = D[i][j-1] * local_V[i][j-1] + D[i][j] * local_V[i][j] + D[i][j+1] * local_V[i][j+1];
-                    W2 = D[i][j-1] * local_W[i][j-1] + D[i][j] * local_W[i][j] + D[i][j+1] * local_W[i][j+1];
+                    U2 = lambda * local_U[i][j-1] + diag * local_U[i][j] + lambda * local_U[i][j+1];
+                    V2 = lambda * local_V[i][j-1] + diag * local_V[i][j] + lambda * local_V[i][j+1];
+                    W2 = lambda * local_W[i][j-1] + diag * local_W[i][j] + lambda * local_W[i][j+1];
                 }
                 
                 local_U[i][j] += dt2 * (U2 + rho_U);
@@ -484,7 +473,6 @@ int main(int argc, char *argv[]) {
     free(local_Ur);
     free(local_Vr);
     free(local_Wr);
-    free(D);
     free(ld);
     free(d);
     free(ud);
