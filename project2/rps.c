@@ -338,7 +338,20 @@ int main(int argc, char *argv[]) {
     end_time = MPI_Wtime();
 
     if (rank == 0) {
-        printf("Elasped time: %f seconds \n", end_time - start_time);
+        double elapsed_time = end_time - start_time;
+    
+        printf("Elapsed time: %f seconds\n", elapsed_time);
+    
+        FILE *f = fopen("times.txt", "a");
+        if (f == NULL) {
+            fprintf(stderr, "Error opening file times.txt\n");
+            MPI_Abort(MPI_COMM_WORLD, 1);
+        }
+    
+        // <num_processes> <elapsed_time>
+        fprintf(f, "num proc: %d | time: %f | N: %d\n", world_size, elapsed_time, N);
+    
+        fclose(f);
     }
 
     // free memory
