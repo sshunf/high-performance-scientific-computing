@@ -59,10 +59,15 @@ void move_blocks(int N, int block_width, int num_blocks, double original[][block
 }
 	
 int main(int argc, char *argv[]) {
+    double start_time, end_time;
+
     MPI_Init(&argc, &argv);
     #ifdef DO_ERROR_CHECKING
     MPI_Comm_set_errhandler(MPI_COMM_WORLD, MPI_ERRORS_RETURN);
     #endif
+
+    // start timer
+    start_time = MPI_Wtime();
 
     // check number of arguments
     if (argc < 4) {
@@ -435,7 +440,12 @@ int main(int argc, char *argv[]) {
         }
     }
     
-    
+    // record time elapsed
+    end_time = MPI_Wtime();
+
+    if (rank == 0) {
+        printf("Elasped time: %f seconds \n", end_time - start_time);
+    }
 
     // if (rank == 0) {
     //     // Write U to text file
