@@ -163,8 +163,10 @@ int main(int argc, char *argv[]) {
     double U2; double V2; double W2;
 
     // initialize parameters for implicit steps
-    double ld_copy[N], d_copy[N], ud_copy[N], uud[N];
+    double uud[N];
     int pivot[N];
+
+    int block = local_N*local_N;
 
     double diag = -lambda;
 
@@ -189,17 +191,12 @@ int main(int argc, char *argv[]) {
 
     int info;
 
-    memcpy(ld_copy, ld, N*sizeof(double));
-    memcpy(d_copy , d , N*sizeof(double));
-    memcpy(ud_copy, ud, N*sizeof(double));
-
-
     // initialize solver parameters
     char tr = 'N';
     int nrhs = local_N;
     int ldb  = N;
 
-    dgttrf_(&N, ld_copy, d_copy, ud_copy, uud, pivot, &info);
+    dgttrf_(&N, ld, d, ud, uud, pivot, &info);
     if (info != 0) {
         fprintf(stderr,"dgttrf failed (info=%d)\n",info);
         MPI_Abort(MPI_COMM_WORLD,-1);
@@ -240,6 +237,18 @@ int main(int argc, char *argv[]) {
             }
         }
 
+        // MPI_Gather(local_U, N*local_N, MPI_DOUBLE, U, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        // MPI_Gather(local_V, N*local_N, MPI_DOUBLE, V, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        // MPI_Gather(local_W, N*local_N, MPI_DOUBLE, W, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+        // if (rank == 0) {
+        //     FILE* fid = fopen("stage1.out","wb");
+        //     fwrite(U, sizeof(double), N*N, fid);
+        //     fwrite(V, sizeof(double), N*N, fid);
+        //     fwrite(W, sizeof(double), N*N, fid);
+        //     fclose(fid);
+        // }
+        
         // swap old and new pointers
         SWAP(local_U,  local_U_new);
         SWAP(local_V,  local_V_new);
@@ -250,13 +259,24 @@ int main(int argc, char *argv[]) {
         transpose_matrix(local_N, N, local_V, local_Vt);
         transpose_matrix(local_N, N, local_W, local_Wt);
 
-        // blocking scatter + gather for all processes 
-        int block = local_N * local_N;
-
         // scatter + gather
-        MPI_Alltoall(&local_Ut[0][0], block, MPI_DOUBLE, &local_Ur[0][0], block, MPI_DOUBLE, MPI_COMM_WORLD);
-        MPI_Alltoall(&local_Vt[0][0], block, MPI_DOUBLE, &local_Vr[0][0], block, MPI_DOUBLE, MPI_COMM_WORLD);
-        MPI_Alltoall(&local_Wt[0][0], block, MPI_DOUBLE, &local_Wr[0][0], block, MPI_DOUBLE, MPI_COMM_WORLD);
+        // MPI_Alltoall(&local_Ut[0][0], block, MPI_DOUBLE, &local_Ur[0][0], block, MPI_DOUBLE, MPI_COMM_WORLD);
+        // MPI_Alltoall(&local_Vt[0][0], block, MPI_DOUBLE, &local_Vr[0][0], block, MPI_DOUBLE, MPI_COMM_WORLD);
+        // MPI_Alltoall(&local_Wt[0][0], block, MPI_DOUBLE, &local_Wr[0][0], block, MPI_DOUBLE, MPI_COMM_WORLD);
+
+        for (int root = 0; root < world_size; root++) {
+            if (rank == root) {
+                // This process provides the full sendbuf
+                MPI_Scatter(&local_Ut[0][0], block, MPI_DOUBLE, &local_Ur[0][0], block, MPI_DOUBLE, root, MPI_COMM_WORLD);
+                MPI_Scatter(&local_Vt[0][0], block, MPI_DOUBLE, &local_Vr[0][0], block, MPI_DOUBLE, root, MPI_COMM_WORLD);
+                MPI_Scatter(&local_Wt[0][0], block, MPI_DOUBLE, &local_Wr[0][0], block, MPI_DOUBLE, root, MPI_COMM_WORLD);
+            } else {
+                // Other processes just receive their part
+                MPI_Scatter(NULL, block, MPI_DOUBLE, &local_Ur[0][0], block, MPI_DOUBLE, root, MPI_COMM_WORLD);
+                MPI_Scatter(NULL, block, MPI_DOUBLE, &local_Vr[0][0], block, MPI_DOUBLE, root, MPI_COMM_WORLD);
+                MPI_Scatter(NULL, block, MPI_DOUBLE, &local_Wr[0][0], block, MPI_DOUBLE, root, MPI_COMM_WORLD);
+            }
+        }
 
         move_blocks(N, local_N, world_size, local_Ur, local_U);
         move_blocks(N, local_N, world_size, local_Vr, local_V);
@@ -268,12 +288,24 @@ int main(int argc, char *argv[]) {
         
         // step 2 - implicit y update
         for (int s=0; s<3; ++s) {
-            dgttrs_(&tr, &N, &nrhs, ld_copy, d_copy, ud_copy, uud, pivot, rhs_list[s], &ldb, &info);
+            dgttrs_(&tr, &N, &nrhs, ld, d, ud, uud, pivot, rhs_list[s], &ldb, &info);
             if (info != 0) {
                 fprintf(stderr,"dgttrs failed (species %d, info=%d)\n",s,info);
                 MPI_Abort(MPI_COMM_WORLD,-1);
             }
         }
+
+        // MPI_Gather(local_U, N*local_N, MPI_DOUBLE, U, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        // MPI_Gather(local_V, N*local_N, MPI_DOUBLE, V, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        // MPI_Gather(local_W, N*local_N, MPI_DOUBLE, W, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+        // if (rank == 0) {
+        //     FILE* fid = fopen("stage2.out","wb");
+        //     fwrite(U, sizeof(double), N*N, fid);
+        //     fwrite(V, sizeof(double), N*N, fid);
+        //     fwrite(W, sizeof(double), N*N, fid);
+        //     fclose(fid);
+        // }
 
         // step 3 - explicit y update
         for (int i = 0; i < local_N; i++) {
@@ -312,9 +344,21 @@ int main(int argc, char *argv[]) {
         transpose_matrix(local_N, N, local_W, local_Wt);
 
         // scatter + gather
-        MPI_Alltoall(&local_Ut[0][0], block, MPI_DOUBLE, &local_Ur[0][0], block, MPI_DOUBLE, MPI_COMM_WORLD);
-        MPI_Alltoall(&local_Vt[0][0], block, MPI_DOUBLE, &local_Vr[0][0], block, MPI_DOUBLE, MPI_COMM_WORLD);
-        MPI_Alltoall(&local_Wt[0][0], block, MPI_DOUBLE, &local_Wr[0][0], block, MPI_DOUBLE, MPI_COMM_WORLD);
+        // MPI_Alltoall(&local_Ut[0][0], block, MPI_DOUBLE, &local_Ur[0][0], block, MPI_DOUBLE, MPI_COMM_WORLD);
+        // MPI_Alltoall(&local_Vt[0][0], block, MPI_DOUBLE, &local_Vr[0][0], block, MPI_DOUBLE, MPI_COMM_WORLD);
+        // MPI_Alltoall(&local_Wt[0][0], block, MPI_DOUBLE, &local_Wr[0][0], block, MPI_DOUBLE, MPI_COMM_WORLD);
+
+        for (int root = 0; root < world_size; root++) {
+            if (rank == root) {
+                MPI_Scatter(&local_Ut[0][0], block, MPI_DOUBLE, &local_Ur[0][0], block, MPI_DOUBLE, root, MPI_COMM_WORLD);
+                MPI_Scatter(&local_Vt[0][0], block, MPI_DOUBLE, &local_Vr[0][0], block, MPI_DOUBLE, root, MPI_COMM_WORLD);
+                MPI_Scatter(&local_Wt[0][0], block, MPI_DOUBLE, &local_Wr[0][0], block, MPI_DOUBLE, root, MPI_COMM_WORLD);
+            } else {
+                MPI_Scatter(NULL, block, MPI_DOUBLE, &local_Ur[0][0], block, MPI_DOUBLE, root, MPI_COMM_WORLD);
+                MPI_Scatter(NULL, block, MPI_DOUBLE, &local_Vr[0][0], block, MPI_DOUBLE, root, MPI_COMM_WORLD);
+                MPI_Scatter(NULL, block, MPI_DOUBLE, &local_Wr[0][0], block, MPI_DOUBLE, root, MPI_COMM_WORLD);
+            }
+        }
 
         move_blocks(N, local_N, world_size, local_Ur, local_U);
         move_blocks(N, local_N, world_size, local_Vr, local_V);
@@ -324,9 +368,21 @@ int main(int argc, char *argv[]) {
         rhs_list[1] = &local_V[0][0];
         rhs_list[2] = &local_W[0][0];
 
+        // MPI_Gather(local_U, N*local_N, MPI_DOUBLE, U, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        // MPI_Gather(local_V, N*local_N, MPI_DOUBLE, V, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        // MPI_Gather(local_W, N*local_N, MPI_DOUBLE, W, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+        // if (rank == 0) {
+        //     FILE* fid = fopen("stage3.out","wb");
+        //     fwrite(U, sizeof(double), N*N, fid);
+        //     fwrite(V, sizeof(double), N*N, fid);
+        //     fwrite(W, sizeof(double), N*N, fid);
+        //     fclose(fid);
+        // }
+
         // step 4 implicit x update (using lapack)
         for (int s=0; s<3; ++s) {
-            dgttrs_(&tr, &N, &nrhs, ld_copy, d_copy, ud_copy, uud, pivot, rhs_list[s], &ldb, &info);
+            dgttrs_(&tr, &N, &nrhs, ld, d, ud, uud, pivot, rhs_list[s], &ldb, &info);
             if (info != 0) {
                 fprintf(stderr,"dgttrs failed (species %d, info=%d)\n",s,info);
                 MPI_Abort(MPI_COMM_WORLD,-1);
@@ -337,6 +393,15 @@ int main(int argc, char *argv[]) {
         MPI_Gather(local_U, N*local_N, MPI_DOUBLE, U, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
         MPI_Gather(local_V, N*local_N, MPI_DOUBLE, V, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
         MPI_Gather(local_W, N*local_N, MPI_DOUBLE, W, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+
+        // if (rank == 0) {
+        //     FILE* fid = fopen("stage4.out","wb");
+        //     fwrite(U, sizeof(double), N*N, fid);
+        //     fwrite(V, sizeof(double), N*N, fid);
+        //     fwrite(W, sizeof(double), N*N, fid);
+        //     fclose(fid);
+        // }
 
         if (rank == 0 && (t % (M / 10)) == 0) {
             FILE *fU = fopen("RPSU.out", "ab");
@@ -377,6 +442,9 @@ int main(int argc, char *argv[]) {
     free(local_U);
     free(local_V);
     free(local_W);
+    free(local_U_new);
+    free(local_V_new);
+    free(local_W_new);
     free(local_Ut);
     free(local_Vt);
     free(local_Wt);
