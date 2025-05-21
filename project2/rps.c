@@ -10,6 +10,9 @@ Solves the Rock-paper-scissors model problem using ADI + MPI on distributed clus
 #include <mpi.h>
 #include <string.h>
 
+// function to swap pointers
+#define SWAP(old, new) do { __typeof__(old) tmp = (old); (old) = (new); (new) = tmp; } while (0)
+
 // lapack function prototypes
 extern void dgttrf_(int *n, double *dl, double *d, double *du, double *uud, int *pivot, int *info);
 extern void dgttrs_(char *trans, int *n, int *nrhs,
@@ -66,7 +69,7 @@ int main(int argc, char *argv[]) {
         seed = atoi(argv[4]);  
     } else {
         // generate a seed
-        seed = 42;  // Example default seed FIX THIS
+        seed = 42; 
     }
 
     // initialize dimension [-L, L] x [-L, L] grid
@@ -95,10 +98,15 @@ int main(int argc, char *argv[]) {
     // calculate number of rows each process is responsible for
     int local_N = N / world_size;
 
-    // initialize local grid (localN x N)
+    // initialize old local grid (localN x N)
     double (*local_U)[N] = malloc(sizeof(*local_U) * local_N);
     double (*local_V)[N] = malloc(sizeof(*local_V) * local_N);
     double (*local_W)[N] = malloc(sizeof(*local_W) * local_N);
+
+    // initialize new local grid (localN x N)
+    double (*local_U_new)[N] = malloc(sizeof(*local_U) * local_N);
+    double (*local_V_new)[N] = malloc(sizeof(*local_V) * local_N);
+    double (*local_W_new)[N] = malloc(sizeof(*local_W) * local_N);
 
     // initialize transposed grid
     double (*local_Ut)[local_N] = malloc(sizeof(*local_Ut) * N);
@@ -165,10 +173,7 @@ int main(int argc, char *argv[]) {
     double (*V)[N] = NULL;
     double (*W)[N] = NULL;
 
-    // initialize solver parameters
-    char tr = 'N';
-    int nrhs = local_N;
-    int ldb  = N;
+    // intialize rhs pointers for solver
     double *rhs_list[3] = { &local_U[0][0], &local_V[0][0], &local_W[0][0] };
 
     // MPI Gather to rank 0 to write initial state to files
@@ -181,6 +186,24 @@ int main(int argc, char *argv[]) {
     MPI_Gather(local_U, N*local_N,MPI_DOUBLE, U, N*local_N,MPI_DOUBLE, 0, MPI_COMM_WORLD);
     MPI_Gather(local_V, N*local_N,MPI_DOUBLE, V, N*local_N,MPI_DOUBLE, 0, MPI_COMM_WORLD);
     MPI_Gather(local_W, N*local_N,MPI_DOUBLE, W, N*local_N,MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+    int info;
+
+    memcpy(ld_copy, ld, N*sizeof(double));
+    memcpy(d_copy , d , N*sizeof(double));
+    memcpy(ud_copy, ud, N*sizeof(double));
+
+
+    // initialize solver parameters
+    char tr = 'N';
+    int nrhs = local_N;
+    int ldb  = N;
+
+    dgttrf_(&N, ld_copy, d_copy, ud_copy, uud, pivot, &info);
+    if (info != 0) {
+        fprintf(stderr,"dgttrf failed (info=%d)\n",info);
+        MPI_Abort(MPI_COMM_WORLD,-1);
+    }
 
     if (rank == 0) {
         FILE *f;
@@ -211,11 +234,16 @@ int main(int argc, char *argv[]) {
                     W2 = lambda * local_W[i][j-1] + diag * local_W[i][j] + lambda * local_W[i][j+1];
                 }
                 
-                local_U[i][j] += dt2 * (U2 + rho_U);
-                local_V[i][j] += dt2 * (V2 + rho_V);
-                local_W[i][j] += dt2 * (W2 + rho_W);
+                local_U_new[i][j] = local_U[i][j] + dt2 * (U2 + rho_U);
+                local_V_new[i][j] = local_V[i][j] + dt2 * (V2 + rho_V);
+                local_W_new[i][j] = local_W[i][j] + dt2 * (W2 + rho_W);
             }
         }
+
+        // swap old and new pointers
+        SWAP(local_U,  local_U_new);
+        SWAP(local_V,  local_V_new);
+        SWAP(local_W,  local_W_new);
 
         // tranpose array
         transpose_matrix(local_N, N, local_U, local_Ut);
@@ -234,19 +262,11 @@ int main(int argc, char *argv[]) {
         move_blocks(N, local_N, world_size, local_Vr, local_V);
         move_blocks(N, local_N, world_size, local_Wr, local_W);
 
+        rhs_list[0] = &local_U[0][0];
+        rhs_list[1] = &local_V[0][0];
+        rhs_list[2] = &local_W[0][0];
+        
         // step 2 - implicit y update
-        memcpy(ld_copy, ld, N*sizeof(double));
-        memcpy(d_copy , d , N*sizeof(double));
-        memcpy(ud_copy, ud, N*sizeof(double));
-
-        int info;
-
-        dgttrf_(&N, ld_copy, d_copy, ud_copy, uud, pivot, &info);
-        if (info != 0) {
-            fprintf(stderr,"dgttrf failed (info=%d)\n",info);
-            MPI_Abort(MPI_COMM_WORLD,-1);
-        }
-
         for (int s=0; s<3; ++s) {
             dgttrs_(&tr, &N, &nrhs, ld_copy, d_copy, ud_copy, uud, pivot, rhs_list[s], &ldb, &info);
             if (info != 0) {
@@ -275,11 +295,16 @@ int main(int argc, char *argv[]) {
                     W2 = lambda * local_W[i][j-1] + diag * local_W[i][j] + lambda * local_W[i][j+1];
                 }
                 
-                local_U[i][j] += dt2 * (U2 + rho_U);
-                local_V[i][j] += dt2 * (V2 + rho_V);
-                local_W[i][j] += dt2 * (W2 + rho_W);
+                local_U_new[i][j] = local_U[i][j] + dt2 * (U2 + rho_U);
+                local_V_new[i][j] = local_V[i][j] + dt2 * (V2 + rho_V);
+                local_W_new[i][j] = local_W[i][j] + dt2 * (W2 + rho_W);
             }
         }
+
+        // swap old and new pointers
+        SWAP(local_U,  local_U_new);
+        SWAP(local_V,  local_V_new);
+        SWAP(local_W,  local_W_new);
 
         // transpose array + MPI scatter
         transpose_matrix(local_N, N, local_U, local_Ut);
@@ -295,17 +320,11 @@ int main(int argc, char *argv[]) {
         move_blocks(N, local_N, world_size, local_Vr, local_V);
         move_blocks(N, local_N, world_size, local_Wr, local_W);
 
+        rhs_list[0] = &local_U[0][0];
+        rhs_list[1] = &local_V[0][0];
+        rhs_list[2] = &local_W[0][0];
+
         // step 4 implicit x update (using lapack)
-        memcpy(ld_copy, ld, N*sizeof(double));
-        memcpy(d_copy , d , N*sizeof(double));
-        memcpy(ud_copy, ud, N*sizeof(double));
-
-        dgttrf_(&N, ld_copy, d_copy, ud_copy, uud, pivot, &info);
-        if (info != 0) {
-            fprintf(stderr,"dgttrf failed (info=%d)\n",info);
-            MPI_Abort(MPI_COMM_WORLD,-1);
-        }
-
         for (int s=0; s<3; ++s) {
             dgttrs_(&tr, &N, &nrhs, ld_copy, d_copy, ud_copy, uud, pivot, rhs_list[s], &ldb, &info);
             if (info != 0) {
