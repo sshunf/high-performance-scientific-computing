@@ -1,0 +1,471 @@
+function [u,v,w,X,Y] = Rpsadidebug(N,alpha,M)
+% rps(N,alpha,M)
+% simulate Rock-Paper-Scissors Model
+% N = number of grid points in both dimensions
+% alpha = depredation rate
+% M = number of time steps
+%
+% To use:
+% 1. In your code add file output for checking each stage
+%   a. After the explicit in x step save your data this way:
+%      
+%      FILE* fid = fopen("stage1.out","w");
+%      fwrite(u, sizeof(double), N*N, fid);
+%      fwrite(v, sizeof(double), N*N, fid);
+%      fwrite(w, sizeof(double), N*N, fid);
+%      fclose(fid);
+%
+%   b. After the implicit in y step, save your data as above 
+%      except using the file name "stage2.out". 
+%
+%   c. After the explicit in y step, save your data as above
+%      except using the file name "stage3.out".
+% 
+%   d. After the implicit in x step, save your data as above
+%      except using the file name "stage4.out" and then after
+%      you close the file, add the line
+%
+%      exit(0);
+% 
+%      so that you get the first instance of each stage of the 
+%      method.
+%
+% 2. Run your code to generate the output data
+%
+% 3. Run rpsadidebug with the same parameters. After each stage, 
+%    the code will compare with your output. The plots should have 
+%    max < 1e-12. The first stage that doesn't match is where a 
+%    problem is. Note that your data may be transposed, in which 
+%    case, modify this script with transposes when the data is read 
+%    so that it matches.
+%
+% 4. If your implicit step isn't matching, save your NxN matrix
+%    in a file called 'A.out'. It can be saved either as a full NxN
+%    matrix or as 3 diagonals this way:
+%
+%    FILE* fid = fopen("A.out","w");
+%    fwrite(Alower, sizeof(double), N-1, fid);
+%    fwrite(Amain, sizeof(double), N, fid);
+%    fwrite(Aupper, sizeof(double), N-1, fid);
+%    fclose(fid);
+%
+
+T=200;
+dt=T/M;
+L=60;
+x=linspace(-L,L,N);
+beta = 1/(1+alpha);
+dx = x(2)-x(1);
+[X,Y]= meshgrid(x,x);
+u = beta*rand(size(X));
+v = beta*rand(size(X));
+w = beta*rand(size(X));
+
+fid = fopen('RPSU.out');
+if fid==-1
+    fprintf('Unable to find file RPSU.out\n');
+    return;
+end
+u = fread(fid,[N,N],'double');
+fclose(fid);
+fid = fopen('RPSV.out');
+if fid==-1
+    fprintf('Unable to find file RPSV.out\n');
+    return ;
+end
+v = fread(fid,[N,N],'double');
+fclose(fid);
+fid = fopen('RPSW.out');
+if fid==-1
+    fprintf('Unable to find file RPSW.out\n');
+    return ;
+end
+w = fread(fid,[N,N],'double');
+fclose(fid);
+
+D = -2./dx^2*diag(ones(N,1),0)+1./dx^2*diag(ones(N-1,1),1) ...
+    +1./dx^2*diag(ones(N-1,1),-1);
+D(1,2) = 2/dx^2;
+D(N,N-1) = 2/dx^2;
+
+rhou=zeros(size(u));
+rhov=rhou;
+rhow=rhov;
+
+figure(1)
+subplot(1,4,1);
+contourf(X,Y,u,0:0.01:1,'LineStyle','none');
+colormap('default');
+caxis([0,1]);
+axis equal
+subplot(1,4,2);
+contourf(X,Y,v,0:0.01:1,'LineStyle','none');
+caxis([0,1]);
+axis equal
+title(sprintf('Time = %f',0))
+subplot(1,4,3);
+contourf(X,Y,w,0:0.01:1,'LineStyle','none');
+caxis([0,1]);
+axis equal
+subplot(1,4,4);
+contourf(X,Y,u-max(v,w)+2,2:0.01:3,'LineStyle','none');
+caxis([0,3]);
+hold on
+contourf(X,Y,v-max(u,w)+1,1:0.01:2,'LineStyle','none');
+contourf(X,Y,w-max(u,v),0:0.01:1,'LineStyle','none');
+hold off
+axis equal
+drawnow
+xcontiguous = 0;
+
+%for step=1:M
+
+    % explicit in x
+    rhou = u.*(1-u-alpha*w);
+    rhov = v.*(1-v-alpha*u);
+    rhow = w.*(1-w-alpha*v);
+    % x direction is in the contiguous direction
+    i = 1;
+    for j=1:N
+        u2(i,j) = u(i,j) + dt/dx^2*(u(i+1,j)-u(i,j)) + dt/2*rhou(i,j);
+        v2(i,j) = v(i,j) + dt/dx^2*(v(i+1,j)-v(i,j)) + dt/2*rhov(i,j);
+        w2(i,j) = w(i,j) + dt/dx^2*(w(i+1,j)-w(i,j)) + dt/2*rhow(i,j);
+    end
+    for i=2:N-1
+        for j=1:N
+            u2(i,j) = u(i,j) + dt/2/dx^2*(u(i+1,j)-2*u(i,j)+u(i-1,j)) + dt/2*rhou(i,j);
+            v2(i,j) = v(i,j) + dt/2/dx^2*(v(i+1,j)-2*v(i,j)+v(i-1,j)) + dt/2*rhov(i,j);
+            w2(i,j) = w(i,j) + dt/2/dx^2*(w(i+1,j)-2*w(i,j)+w(i-1,j)) + dt/2*rhow(i,j);
+        end
+    end
+    i = N;
+    for j=1:N
+        u2(i,j) = u(i,j) + dt/dx^2*(-u(i,j)+u(i-1,j)) + dt/2*rhou(i,j);
+        v2(i,j) = v(i,j) + dt/dx^2*(-v(i,j)+v(i-1,j)) + dt/2*rhov(i,j);
+        w2(i,j) = w(i,j) + dt/dx^2*(-w(i,j)+w(i-1,j)) + dt/2*rhow(i,j);
+    end
+    % x direction is in the non-contiguous direction
+    for i=1:N
+        j = 1;
+        u3(i,j) = u(i,j) + dt/dx^2*(u(i,j+1)-u(i,j)) + dt/2*rhou(i,j);
+        v3(i,j) = v(i,j) + dt/dx^2*(v(i,j+1)-v(i,j)) + dt/2*rhov(i,j);
+        w3(i,j) = w(i,j) + dt/dx^2*(w(i,j+1)-w(i,j)) + dt/2*rhow(i,j);
+        for j=2:N-1
+            u3(i,j) = u(i,j) + dt/2/dx^2*(u(i,j+1)-2*u(i,j)+u(i,j-1)) + dt/2*rhou(i,j);
+            v3(i,j) = v(i,j) + dt/2/dx^2*(v(i,j+1)-2*v(i,j)+v(i,j-1)) + dt/2*rhov(i,j);
+            w3(i,j) = w(i,j) + dt/2/dx^2*(w(i,j+1)-2*w(i,j)+w(i,j-1)) + dt/2*rhow(i,j);
+        end
+        j = N;
+        u3(i,j) = u(i,j) + dt/dx^2*(u(i,j-1)-u(i,j)) + dt/2*rhou(i,j);
+        v3(i,j) = v(i,j) + dt/dx^2*(v(i,j-1)-v(i,j)) + dt/2*rhov(i,j);
+        w3(i,j) = w(i,j) + dt/dx^2*(w(i,j-1)-w(i,j)) + dt/2*rhow(i,j);
+    end
+
+    % check stage 1
+    fid = fopen('stage1.out');
+    if fid ~= -1
+        uu = fread(fid,[N,N],'double');
+        vv = fread(fid,[N,N],'double');
+        ww = fread(fid,[N,N],'double');
+        uu = uu';
+        vv = u
+        maxerr(1) = max([max(abs(u2-uu),[],'all'),max(abs(v2-vv),[],'all'), ...
+            max(abs(w2-ww),[],'all')]);
+        maxerr(2) = max([max(abs(u2-uu'),[],'all'),max(abs(v2-vv'),[],'all'), ...
+            max(abs(w2-ww'),[],'all')]);
+        maxerr(3) = max([max(abs(u3-uu),[],'all'),max(abs(v3-vv),[],'all'), ...
+            max(abs(w3-ww),[],'all')]);
+        maxerr(4) = max([max(abs(u3-uu'),[],'all'),max(abs(v3-vv'),[],'all'), ...
+            max(abs(w3-ww'),[],'all')]);
+        if min(maxerr(1:2)) < min(maxerr(3:4))
+            fprintf('explicit in X step appears to be in the contiguous direction\n');
+            xcontiguous = 1;
+        else
+            fprintf('explicit in X step appears to be in the non-contiguous direction\n');
+            xcontiguous = 0;
+        end
+        if min(maxerr) > 1e-11
+            [mx,k] = min(maxerr);
+            figure(1)
+            switch k
+                case 1
+                    subplot(1,3,1);
+                    surf(u2-uu,'LineStyle','none');
+                    title('u error')
+                    subplot(1,3,2);
+                    surf(v2-vv,'LineStyle','none');
+                    title('v error')
+                    subplot(1,3,3);
+                    surf(w2-ww,'LineStyle','none');
+                case 2
+                    subplot(1,3,1);
+                    surf(u2-uu','LineStyle','none');
+                    title('u error')
+                    subplot(1,3,2);
+                    surf(v2-vv','LineStyle','none');
+                    title('v error')
+                    subplot(1,3,3);
+                    surf(w2-ww','LineStyle','none');
+                case 3
+                    subplot(1,3,1);
+                    surf(u3-uu,'LineStyle','none');
+                    title('u error')
+                    subplot(1,3,2);
+                    surf(v3-vv,'LineStyle','none');
+                    title('v error')
+                    subplot(1,3,3);
+                    surf(w3-ww,'LineStyle','none');
+                case 4
+                    subplot(1,3,1);
+                    surf(u3-uu','LineStyle','none');
+                    title('u error')
+                    subplot(1,3,2);
+                    surf(v3-vv','LineStyle','none');
+                    title('v error')
+                    subplot(1,3,3);
+                    surf(w3-ww','LineStyle','none');
+            end
+            title('w error')
+            fprintf('Check explicit in x step\n');
+            return 
+        else
+            fprintf('Explicit in x looks good\n');
+        end
+    else
+        fprintf('Skipping stage 1\n');
+    end
+
+    % implicit in y
+    if xcontiguous == 1
+        u = ((eye(N,N)-dt/2*D)\u2')';
+        v = ((eye(N,N)-dt/2*D)\v2')';
+        w = ((eye(N,N)-dt/2*D)\w2')';
+    else
+        u = (eye(N,N)-dt/2*D)\u3;
+        v = (eye(N,N)-dt/2*D)\v3;
+        w = (eye(N,N)-dt/2*D)\w3;
+    end
+
+    % check stage 2
+    fid = fopen('stage2.out');
+    if fid ~= -1
+        uu = fread(fid,[N,N],'double')';
+        vv = fread(fid,[N,N],'double')';
+        ww = fread(fid,[N,N],'double')';
+        fclose(fid);
+        maxerr(1) = max([max(abs(u-uu),[],'all'),max(abs(v-vv),[],'all'), ...
+            max(abs(w-ww),[],'all')]);
+        maxerr(2) = max([max(abs(u-uu'),[],'all'),max(abs(v-vv'),[],'all'), ...
+            max(abs(w-ww'),[],'all')]);
+        if min(maxerr(1:2)) > 1e-11
+            figure(1)
+            if maxerr(1) < maxerr(2)
+                subplot(1,3,1);
+                surf(u-uu,'LineStyle','none');
+                title('u error')
+                subplot(1,3,2);
+                surf(v-vv,'LineStyle','none');
+                title('v error')
+                subplot(1,3,3);
+                surf(w-ww,'LineStyle','none');
+            else
+                subplot(1,3,1);
+                surf(u-uu','LineStyle','none');
+                title('u error')
+                subplot(1,3,2);
+                surf(v-vv','LineStyle','none');
+                title('v error')
+                subplot(1,3,3);
+                surf(w-ww','LineStyle','none');
+            end
+            title('w error')
+            fprintf('Check implicit in y step\n');
+            
+            fid = fopen('A.out');
+            if fid ~= -1
+                info = dir('A.out');
+                if info.bytes/8 > 3*N-2
+                    A = fread(fid,[N,N],'double');
+                else
+                    A = diag(fread(fid,N-1,'double'),-1) ...
+                        + diag(fread(fid,N,'double'),0) ...
+                        + diag(fread(fid,N-1,'double'),1);
+                end
+                fclose(fid);
+                if max(abs(A-(eye(N,N)-dt/2*D)),[],'all') > 1e-14
+                    figure(2);
+                    spy((abs(A-(eye(N,N)-dt/2*D))>1e-14).*abs(A-(eye(N,N)-dt/2*D)));
+                    fprintf('Check these entries in your Implicit in A matrix\n')
+                else
+                    fprintf('Matrix is OK, so check right hand side vector.\n')
+                end
+            end
+            return 
+        else
+            fprintf('Implicit in y looks good\n');
+        end
+    else
+        fprintf('Skipping stage 2\n');
+    end
+    
+    % explicit in y
+    rhou = u.*(1-u-alpha*w);
+    rhov = v.*(1-v-alpha*u);
+    rhow = w.*(1-w-alpha*v);
+    if xcontiguous == 1
+        for i=1:N
+            j = 1;
+            u2(i,j) = u(i,j) + dt/dx^2*(u(i,j+1)-u(i,j)) + dt/2*rhou(i,j);
+            v2(i,j) = v(i,j) + dt/dx^2*(v(i,j+1)-v(i,j)) + dt/2*rhov(i,j);
+            w2(i,j) = w(i,j) + dt/dx^2*(w(i,j+1)-w(i,j)) + dt/2*rhow(i,j);
+    
+            for j=2:N-1
+                u2(i,j) = u(i,j) + dt/2/dx^2*(u(i,j+1)-2*u(i,j)+u(i,j-1)) + dt/2*rhou(i,j);
+                v2(i,j) = v(i,j) + dt/2/dx^2*(v(i,j+1)-2*v(i,j)+v(i,j-1)) + dt/2*rhov(i,j);
+                w2(i,j) = w(i,j) + dt/2/dx^2*(w(i,j+1)-2*w(i,j)+w(i,j-1)) + dt/2*rhow(i,j);
+            end
+    
+            j = N;
+            u2(i,j) = u(i,j) + dt/dx^2*(-u(i,j)+u(i,j-1)) + dt/2*rhou(i,j);
+            v2(i,j) = v(i,j) + dt/dx^2*(-v(i,j)+v(i,j-1)) + dt/2*rhov(i,j);
+            w2(i,j) = w(i,j) + dt/dx^2*(-w(i,j)+w(i,j-1)) + dt/2*rhow(i,j);
+        end 
+    else
+        i = 1;
+        for j=1:N
+            u2(i,j) = u(i,j) + dt/dx^2*(u(i+1,j)-u(i,j)) + dt/2*rhou(i,j);
+            v2(i,j) = v(i,j) + dt/dx^2*(v(i+1,j)-v(i,j)) + dt/2*rhov(i,j);
+            w2(i,j) = w(i,j) + dt/dx^2*(w(i+1,j)-w(i,j)) + dt/2*rhow(i,j);
+        end
+        for i=2:N-1
+            for j=1:N
+                u2(i,j) = u(i,j) + dt/2/dx^2*(u(i+1,j)-2*u(i,j)+u(i-1,j)) + dt/2*rhou(i,j);
+                v2(i,j) = v(i,j) + dt/2/dx^2*(v(i+1,j)-2*v(i,j)+v(i-1,j)) + dt/2*rhov(i,j);
+                w2(i,j) = w(i,j) + dt/2/dx^2*(w(i+1,j)-2*w(i,j)+w(i-1,j)) + dt/2*rhow(i,j);
+            end
+        end
+        i = N;
+        for j=1:N
+            u2(i,j) = u(i,j) + dt/dx^2*(u(i-1,j)-u(i,j)) + dt/2*rhou(i,j);
+            v2(i,j) = v(i,j) + dt/dx^2*(v(i-1,j)-v(i,j)) + dt/2*rhov(i,j);
+            w2(i,j) = w(i,j) + dt/dx^2*(w(i-1,j)-w(i,j)) + dt/2*rhow(i,j);
+        end
+    end
+
+    % check stage 3
+    fid = fopen('stage3.out');
+    if fid ~= -1
+        uu = fread(fid,[N,N],'double');
+        vv = fread(fid,[N,N],'double');
+        ww = fread(fid,[N,N],'double');
+        maxerr(1) = max([max(abs(u2-uu),[],'all'),max(abs(v2-vv),[],'all'), ...
+            max(abs(w2-ww),[],'all')]);
+        maxerr(2) = max([max(abs(u2-uu'),[],'all'),max(abs(v2-vv'),[],'all'), ...
+            max(abs(w2-ww'),[],'all')]);
+        if min(maxerr) > 1e-11
+            figure(1)
+            if maxerr(1) < maxerr(2)
+                subplot(1,3,1);
+                surf(u2-uu,'LineStyle','none');
+                title('u error')
+                subplot(1,3,2);
+                surf(v2-vv,'LineStyle','none');
+                title('v error')
+                subplot(1,3,3);
+                surf(w2-ww,'LineStyle','none');
+            else
+                subplot(1,3,1);
+                surf(u2-uu','LineStyle','none');
+                title('u error')
+                subplot(1,3,2);
+                surf(v2-vv','LineStyle','none');
+                title('v error')
+                subplot(1,3,3);
+                surf(w2-ww','LineStyle','none');
+            end
+            title('w error')
+            fprintf('Check explicit in y step\n');
+            return 
+        else
+            fprintf('Explicit in y looks good\n');
+        end
+    else
+        fprintf('Skipping stage 3\n');
+    end
+
+    % implicit in x
+    if xcontiguous == 1
+        u = (eye(N,N)-dt/2*D)\u2;
+        v = (eye(N,N)-dt/2*D)\v2;
+        w = (eye(N,N)-dt/2*D)\w2;
+    else
+        u = ((eye(N,N)-dt/2*D)\u2')';
+        v = ((eye(N,N)-dt/2*D)\v2')';
+        w = ((eye(N,N)-dt/2*D)\w2')';
+    end
+    % check stage 4
+    fid = fopen('stage4.out');
+    if fid ~= -1
+        uu = fread(fid,[N,N],'double')';
+        vv = fread(fid,[N,N],'double')';
+        ww = fread(fid,[N,N],'double')';
+        fclose(fid);
+        maxerr(1) = max([max(abs(u-uu),[],'all'),max(abs(v-vv),[],'all'), ...
+            max(abs(w-ww),[],'all')]);
+        maxerr(2) = max([max(abs(u-uu'),[],'all'),max(abs(v-vv'),[],'all'), ...
+            max(abs(w-ww'),[],'all')]);
+        if min(maxerr(1:2)) > 1e-11
+            figure(1)
+            if maxerr(1) < maxerr(2)
+                subplot(1,2,1);
+                surf(u-uu,'LineStyle','none');
+                title('u error')
+                subplot(1,2,2);
+                surf(v-vv,'LineStyle','none');
+                title('v error')
+                subplot(1,3,3);
+                surf(w-ww,'LineStyle','none');
+            else
+                subplot(1,2,1);
+                surf(u-uu','LineStyle','none');
+                title('u error')
+                subplot(1,2,2);
+                surf(v-vv','LineStyle','none');
+                title('v error')
+                subplot(1,3,3);
+                surf(w-ww','LineStyle','none');
+            end
+            title('w error')
+            fprintf('Check implicit in x step\n');
+            
+            fid = fopen('A.out');
+            if fid ~= -1
+                info = dir('A.out');
+                if info.bytes/8 > 3*N-2
+                    A = fread(fid,[N,N],'double');
+                else
+                    A = diag(fread(fid,N-1,'double'),-1) ...
+                        + diag(fread(fid,N,'double'),0) ...
+                        + diag(fread(fid,N-1,'double'),1);
+                end
+                fclose(fid);
+                if max(abs(A-(eye(N,N)-dt/2*D)),[],'all') > 1e-14
+                    figure(2);
+                    spy((abs(A-(eye(N,N)-dt/2*D))>1e-14).*abs(A-(eye(N,N)-dt/2*D)));
+                    fprintf('Check these entries in your Implicit in A matrix\n')
+                else
+                    fprintf('Matrix is OK, so check right hand side vector.\n')
+                end
+            end
+            return 
+        else
+            fprintf('Implicit in x looks good\n');
+        end
+    else
+        fprintf('Skipping stage 4\n');
+    end
+
+
+%end
+
+end
