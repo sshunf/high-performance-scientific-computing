@@ -1,37 +1,39 @@
-procs_strong = [1, 2, 4, 8, 16];
-times_strong = [48.808913, 18.367957, 13.868888, 9.044261, 6.424708];
-T1_strong = times_strong(1);
+% Load data from text file
+data = readmatrix('times.txt');
 
-strong_eff = (T1_strong ./ (procs_strong .* times_strong)) * 100;
+% First 5 rows: strong scaling, last 5 rows: weak scaling
+strong_data = data(1:5, :);
+weak_data = data(6:10, :);
 
-procs_weak = [1, 4, 9, 9, 16, 25];
-times_weak = [2.306465, 4.566021, 4.251426, 8.435974, 5.875494, 8.978110];
+% Sort by number of processors for better visualization
+strong_data = sortrows(strong_data, 1);
+weak_data = sortrows(weak_data, 1);
 
-T1_weak = times_weak(1);
+% Extract variables
+p_strong = strong_data(:, 1);
+T_strong = strong_data(:, 2);
+T1_strong = T_strong(p_strong == 1);
+E_strong = T1_strong ./ (p_strong .* T_strong);
 
-weak_eff = (T1_weak ./ times_weak) * 100;
+p_weak = weak_data(:, 1);
+T_weak = weak_data(:, 2);
+T1_weak = T_weak(p_weak == 1);
+E_weak = T1_weak ./ T_weak;
 
+% Plotting
 figure;
-hold on;
-
-plot(procs_strong, strong_eff, 's--', 'LineWidth', 2, 'MarkerSize', 8, 'DisplayName', 'Strong Efficiency');
-plot(procs_weak, weak_eff, 'o-', 'LineWidth', 2, 'MarkerSize', 8, 'DisplayName', 'Weak Efficiency');
-
-xlabel('Number of Processes');
-ylabel('Efficiency (%)');
-title('Strong vs Weak Efficiency');
-legend('Location', 'northeast');
+subplot(1,2,1);
+plot(p_strong, E_strong, 'bo-', 'LineWidth', 2);
+title('Strong Scaling Efficiency');
+xlabel('Number of Processors');
+ylabel('Efficiency');
 grid on;
-ylim([0 110]);
 
-for i = 1:length(procs_strong)
-    text(procs_strong(i), strong_eff(i) + 3, sprintf('%.1f%%', strong_eff(i)), ...
-        'HorizontalAlignment', 'center', 'FontSize', 9, 'Color', 'blue');
-end
+subplot(1,2,2);
+plot(p_weak, E_weak, 'ro-', 'LineWidth', 2);
+title('Weak Scaling Efficiency');
+xlabel('Number of Processors');
+ylabel('Efficiency');
+grid on;
 
-for i = 1:length(procs_weak)
-    text(procs_weak(i), weak_eff(i) + 3, sprintf('%.1f%%', weak_eff(i)), ...
-        'HorizontalAlignment', 'center', 'FontSize', 9, 'Color', 'black');
-end
-
-hold off;
+sgtitle('Parallel Efficiency: Strong vs Weak Scaling');
