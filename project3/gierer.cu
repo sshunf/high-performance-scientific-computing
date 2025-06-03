@@ -5,7 +5,6 @@
 
 #define NUM_BLOCKS 8;
 #define NUM_THREADS_PER_BLOCK 16;
-#define N 128;
 #define REAL_SIZE = N*N;
 #define COMPLEX_SIZE = N*(N/2+1);
 
@@ -17,6 +16,27 @@ static void HANDLEERROR( cudaError_t err, const char* file, int line) {
     }
 }
 #define HandleError(err) (HANDLEERROR(err, __FILE__, __LINE__))
+
+__global__ void runge_kutta_advance(double* dev_u, double* dev_v, int step) {
+    // TODO
+    continue;
+}
+
+// helper function to rescale matrix after inverse fft
+__global__ void rescale(double* dev_matrix, double* factor, int rows, int cols) {
+    for (int i = 0; i < rows; ++i) {
+        for (int j = 0; j < cols; ++j) {
+            dev_matrix[i * cols + j] *= scalar;
+        }
+    }
+}
+
+// function to swap pointers for runge-kutta step
+inline void swap(double*& A, double*& B) {
+    double* temp = A;
+    A = B;
+    B = temp;
+}
 
 int main(int argc, char* argv[]) {
     if (argc < 9) {
@@ -77,9 +97,44 @@ int main(int argc, char* argv[]) {
     cudaMalloc(&dev_u, sizeof(double) * REAL_SIZE);
     cudaMalloc(&dev_v, sizeof(double) * REAL_SIZE);
 
-    cufftComplex* dev_cu, dev_cv;
-    cudaMalloc(&dev_cu, sizeof(cufftComplex) * COMPLEX_SIZE);
-    cudaMalloc(&dev_cv, sizeof(cufftComplex) * COMPLEX_SIZE);
+    cudaMemcpy(dev_u, sizeof(double) * REAL_SIZE, cudaMemcpyHostToDevice);
+    cudaMemcpy(dev_v, sizeof(double) * REAL_SIZE, cudaMemcpyHostToDevice);
 
+    cufftDoubleComplex* dev_cu, dev_cv;
+    cudaMalloc((void**)&dev_cu, sizeof(cufftDoubleComplex) * COMPLEX_SIZE);
+    cudaMalloc((void**)&dev_cv, sizeof(cufftDoubleComplex) * COMPLEX_SIZE);
+
+    // create fft plans
+    cufftHandle plan_r2c, plan_c2r;
+    cufftPlan2d(&plan_r2c, N, N, CUFFT_R2C);
+    cufftPlan2d(&plan_c2r, N, N, CUFFT_C2R);
+    
+    // cufft does not normalize so make sure to divide by N*N after the inverse
+
+    // time step loop
+    for (int t = 0; t < K; t++) {
+        // forward fft (t1)
+        // backward fft (t1)
+        // runge-kutta time step (t1)
+        // swap pointers
+
+        // forward fft (t2)
+        // backward fft (t2)
+        // runge-kutta time step (t2)
+        // swap pointers
+
+        // forward fft (t3)
+        // backward fft (t3)
+        // runge-kutta time step (t3)
+        // swap pointers
+
+        // forward fft (t4)
+        // backward fft (t4)
+        // runge-kutta time step (t4)
+        // swap pointers
+    }
+
+    cufftDestroy(plan_r2c); cufftDestroy(plan_c2r);
+    cudaFree(dev_u); cudaFree(dev_v); cudaFree(dev_cu); cudaFree(dev_cv);
     return 0;
 }
