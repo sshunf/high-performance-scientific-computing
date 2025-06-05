@@ -13,74 +13,78 @@
 #define L 200.0
 #define DIFF_COEFF ((2.0 * M_PI / L) * (2.0 * M_PI / L))
 
-// error handler
-static void HANDLEERROR( cudaError_t err, const char* file, int line) {
-    if (err != cudaSuccess) {
-        printf("%s in %s at line %d\n", cudaGetErrorString(err), file,line);
-        exit(1);
-    }
-}
-#define HandleError(err) (HANDLEERROR(err, __FILE__, __LINE__))
+__constant__ int dev_N;
+__constant__ double dev_dt;
+__constant__ int dev_Du;
+__constant__ int dev_Dv;
 
-// advances 
-__global__ void runge_kutta_advance(double* dev_u, double* dev_v, double* dev_d2u, double* dev_d2v, int step) {
+// error handler
+// static void HANDLEERROR( cudaError_t err, const char* file, int line) {
+//     if (err != cudaSuccess) {
+//         printf("%s in %s at line %d\n", cudaGetErrorString(err), file,line);
+//         exit(1);
+//     }
+// }
+// #define HandleError(err) (HANDLEERROR(err, __FILE__, __LINE__))
+
+// advances time step 
+__global__ void runge_kutta_step(double* dev_u, double* dev_v, double* dev_d2u, double* dev_d2v, int step) {
     int i = blockIdx.y * blockDim.y + threadIdx.y;
     int j = blockIdx.x * blockDim.x + threadIdx.x;
 
-    if (i >= N || j >= N) return;
+    if (i >= dev_N || j >= dev_N) return;
 
-    int idx = i * N + j;
+    int idx = i * dev_N + j;
 
     double old_u = dev_u[idx];
     double old_v = dev_v[idx];
 
-    dev_u[idx] = old_u + dt / step * dev_d2u[idx];
-    dev_v[idx] = old_v + dt / step * dev_d2v[idx];
-
-    __syncthreads();
+    dev_u[idx] = old_u + dev_dt / step * dev_d2u[idx];
+    dev_v[idx] = old_v + dev_dt / step * dev_d2v[idx];
 }
 
 // helper function to rescale matrix after inverse fft
-__global__ void rescale(double* dev_matrix, double factor, int rows, int cols) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int totalSize = rows * cols;
-    if (idx < totalSize) {
-        dev_matrix[idx] *= factor;
-    }
+__global__ void normalize(double* dev_matrix) {
+    int i = blockIdx.y * blockDim.y + threadIdx.y;  // row
+    int j = blockIdx.x * blockDim.x + threadIdx.x;  // col
+    if (i >= dev_N || j >= dev_N) return;
+
+    int idx = i * dev_N + j;
+    dev_matrix[idx] /= (dev_N * dev_N);
 }
+
+__global__ void add_reaction_terms(double* )
 
 // function to swap pointers for runge-kutta step
-inline void swap(double*& A, double*& B) {
-    double* temp = A;
-    A = B;
-    B = temp;
-}
+// inline void swap(double*& A, double*& B) {
+//     double* temp = A;
+//     A = B;
+//     B = temp;
+// }
 
 // consider computing only u instead of both u and v
-__global__ void compute_derivative(cufftDoubleComplex* dev_au, cufftDoubleComplex* dev_av, double D_u, double D_v) {
+__global__ void compute_derivative(cufftDoubleComplex* dev_au, cufftDoubleComplex* dev_av) {
     // TODO
     int i = blockIdx.y * blockDim.y + threadIdx.y;
     int j = blockIdx.x * blockDim.x + threadIdx.x;
 
-    if (i >= N || j >= N/2 + 1) return;
+    if (i >= dev_N || j >= dev_N/2 + 1) return;
 
-    int kx = (i <= N/2) ? i : i - N;
+    int kx = (i <= dev_N/2) ? i : i - dev_N;
     int ky = j;
 
     double k_s = DIFF_COEFF * (kx * kx + ky * ky);
 
-    int idx = i * (N/2 + 1) + j;
+    int idx = i * (dev_N/2 + 1) + j;
 
     cufftDoubleComplex old_au = dev_au[idx];
     cufftDoubleComplex old_av = dev_av[idx];
 
-    dev_au[idx].x = -D_u * k_s * old_au.x;
-    dev_au[idx].y = -D_u * k_s * old_au.y;
+    dev_au[idx].x = -dev_Du * k_s * old_au.x;
+    dev_au[idx].y = -dev_Du * k_s * old_au.y;
 
-    dev_av[idx].x = -D_v * k_s * old_av.x;
-    dev_av[idx].y = -D_v * k_s * old_av.y;
-
-    __syncthreads(); // probably dont need this
+    dev_av[idx].x = -dev_Dv * k_s * old_av.x;
+    dev_av[idx].y = -dev_Dv * k_s * old_av.y;
 }
 
 // void fft(cufftHandle plan_r2c, cufftHandle* plan_c2r, double* dev_u, cufftDoubleComplex* dev_au, double* dev_v, cufftDoubleComplex* dev_av) {
@@ -122,17 +126,6 @@ int main(int argc, char* argv[]) {
     printf("K: %d\n", K);
     printf("seed: %ld\n", seed);
 
-    // declare 
-    __constant__ int dev_N;
-    __constant__ double dev_dt;
-    __constant__ int dev_Du;
-    __constant__ int dev_Dv;
-
-    cudaMemcpyToSymbol(dev_N, &N, sizeof(int));
-    cudaMemcpyToSymbol(dev_dt, &dt, sizeof(double));
-    cudaMemcpyToSymbol(dev_Du, &D_u, sizeof(int));
-    cudaMemcpyToSymbol(dev_Dv, &D_v, sizeof(int));
-
     // set the seed
     srand48(seed);
     double omega;
@@ -152,6 +145,12 @@ int main(int argc, char* argv[]) {
             v[i*N + j] = (a + c)*(a + c)/(c * b)/(c * b);
         }
     }
+
+    // copy variables to device
+    cudaMemcpyToSymbol(dev_dt, &dt, sizeof(double));
+    cudaMemcpyToSymbol(dev_Du, &D_u, sizeof(double));
+    cudaMemcpyToSymbol(dev_Dv, &D_v, sizeof(double));
+    cudaMemcpyToSymbol(dev_N, &N, sizeof(int));
 
     // initialize matrices on device
     double *dev_u, *dev_v, *dev_d2u, *dev_d2v;
@@ -176,22 +175,37 @@ int main(int argc, char* argv[]) {
     
     // cufft does not normalize so make sure to divide by N*N after the inverse
 
-    dim3 blockDim(16, 16);
-    dim3 gridDim(((N/2 + 1) + blockDim.x - 1) / blockDim.x, (N + blockDim.y - 1) / blockDim.y);
+    // dim3 blockDim(16, 16); // number of threads per block
+    // dim3 gridDim(((N/2 + 1) + blockDim.x - 1) / blockDim.x, (N + blockDim.y - 1) / blockDim.y); // number of blocks (5, 8)
+
+    int numBlocks = 16;
+    int gridCX = ((N/2 + 1) + numBlocks - 1) / numBlocks;
+    int gridX = (N + numBlocks - 1) / numBlocks;
+    int gridY = (N + numBlocks - 1) / numBlocks;
+
+    int step = 1;
 
     // time step loop
     for (int t = 0; t < K; t++) {
+
+        step = 1;
         // forward fft (t1)
         cufftExecD2Z(plan_r2c, dev_u, dev_au);
         cufftExecD2Z(plan_r2c, dev_v, dev_av);
     
         // compute derivative
-        compute_derivative<<<blockDim, gridDim>>>(dev_au, dev_av, N, D_u, D_v);
+        compute_derivative<<<dim3(gridCX, gridY), dim3(numBlocks, numBlocks)>>>(dev_au, dev_av);
         
         // backward fft (t1)
-        cufftExecZ2D(plan_c2r, dev_d2u, dev_au);
-        cufftExecZ2D(plan_c2r, dev_d2v, dev_av);
+        cufftExecZ2D(plan_c2r, dev_au, dev_d2u);
+        cufftExecZ2D(plan_c2r, dev_av, dev_d2v);
 
+        normalize<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_d2u);
+        normalize<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_d2v);
+
+        runge_kutta_step<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_u, dev_v, dev_d2u, dev_d2v, step);
+        step++;
+        
         // runge-kutta time step (t1)
 
         // swap pointers
@@ -210,7 +224,7 @@ int main(int argc, char* argv[]) {
         // backward fft (t4)
         // runge-kutta time step (t4)
         // swap pointers
-        continue;
+        break;
     }
 
     cufftDestroy(plan_r2c); cufftDestroy(plan_c2r);
