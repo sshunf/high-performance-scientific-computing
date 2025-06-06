@@ -108,6 +108,8 @@ contourf(u,[-1:0.05:1]);
         d2U = d2U(1:N/2+1,:)/N^2;
         dA = fread(fid,[N+2,N],'double');
         dA = dA(1:2:N+2,:)+i*dA(2:2:N+2,:);
+        disp(size(d2U));
+        disp(size(dA));
         maxerr = min([max(abs(d2U-dA),[],'all'),max(abs(d2U-dA/N^2),[],'all')]);
         if maxerr > 1e-11
             figure(2)

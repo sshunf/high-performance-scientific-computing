@@ -17,6 +17,10 @@ __constant__ int dev_N;
 __constant__ double dev_dt;
 __constant__ int dev_Du;
 __constant__ int dev_Dv;
+__constant__ double dev_a;
+__constant__ double dev_b;
+__constant__ double dev_c;
+__constant__ double dev_eps;
 
 // error handler
 // static void HANDLEERROR( cudaError_t err, const char* file, int line) {
@@ -45,15 +49,31 @@ __global__ void runge_kutta_step(double* dev_u, double* dev_v, double* dev_d2u, 
 
 // helper function to rescale matrix after inverse fft
 __global__ void normalize(double* dev_matrix) {
-    int i = blockIdx.y * blockDim.y + threadIdx.y;  // row
-    int j = blockIdx.x * blockDim.x + threadIdx.x;  // col
+    int i = blockIdx.y * blockDim.y + threadIdx.y;  
+    int j = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= dev_N || j >= dev_N) return;
 
     int idx = i * dev_N + j;
     dev_matrix[idx] /= (dev_N * dev_N);
 }
 
-__global__ void add_reaction_terms(double* )
+__global__ void add_reaction_terms(double* dev_u, double* dev_v, double* dev_d2u, double* dev_d2v) {
+    int i = blockIdx.y * blockDim.y + threadIdx.y;
+    int j = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= dev_N || j >= dev_N) return;
+
+    int idx = i * dev_N + j;
+
+    double u0 = dev_u[idx];
+    double v0 = dev_v[idx];
+
+    // Compute the reaction‐terms
+    double reactionU = dev_a + (u0*u0 / (v0 * (1.0 + dev_eps * u0*u0))) - dev_b * u0; // a + u^2/(v(1+εu^2)) – b u
+    double reactionV = u0*u0 - dev_c * v0; // u^2 – c v
+
+    dev_d2u[idx] += reactionU;
+    dev_d2v[idx] += reactionV; 
+}
 
 // function to swap pointers for runge-kutta step
 // inline void swap(double*& A, double*& B) {
@@ -64,7 +84,6 @@ __global__ void add_reaction_terms(double* )
 
 // consider computing only u instead of both u and v
 __global__ void compute_derivative(cufftDoubleComplex* dev_au, cufftDoubleComplex* dev_av) {
-    // TODO
     int i = blockIdx.y * blockDim.y + threadIdx.y;
     int j = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -110,7 +129,7 @@ int main(int argc, char* argv[]) {
 
     // parse seed
     long seed;
-    if (argc == 9) {
+    if (argc >= 10) {
         seed = atol(argv[9]);
     } else {
         seed = 42;
@@ -138,6 +157,8 @@ int main(int argc, char* argv[]) {
     double* u = (double*)malloc(REAL_SIZE*sizeof(double));
     double* v = (double*)malloc(REAL_SIZE*sizeof(double));
 
+    double* au = (double*)malloc(COMPLEX_SIZE*sizeof(cufftDoubleComplex));
+
     for (int i = 0; i < N; ++i) {
         for (int j = 0; j < N; ++j) {
             omega = drand48();
@@ -148,9 +169,13 @@ int main(int argc, char* argv[]) {
 
     // copy variables to device
     cudaMemcpyToSymbol(dev_dt, &dt, sizeof(double));
-    cudaMemcpyToSymbol(dev_Du, &D_u, sizeof(double));
-    cudaMemcpyToSymbol(dev_Dv, &D_v, sizeof(double));
+    cudaMemcpyToSymbol(dev_Du, &D_u, sizeof(int));
+    cudaMemcpyToSymbol(dev_Dv, &D_v, sizeof(int));
     cudaMemcpyToSymbol(dev_N, &N, sizeof(int));
+    cudaMemcpyToSymbol(dev_a, &a, sizeof(double));
+    cudaMemcpyToSymbol(dev_b, &b, sizeof(double));
+    cudaMemcpyToSymbol(dev_c, &c, sizeof(double));
+    cudaMemcpyToSymbol(dev_eps, &eps, sizeof(double));
 
     // initialize matrices on device
     double *dev_u, *dev_v, *dev_d2u, *dev_d2v;
@@ -170,8 +195,8 @@ int main(int argc, char* argv[]) {
 
     // create fft plans
     cufftHandle plan_r2c, plan_c2r;
-    cufftPlan2d(&plan_r2c, N, N, CUFFT_R2C);
-    cufftPlan2d(&plan_c2r, N, N, CUFFT_C2R);
+    cufftPlan2d(&plan_r2c, N, N, CUFFT_D2Z);
+    cufftPlan2d(&plan_c2r, N, N, CUFFT_Z2D);
     
     // cufft does not normalize so make sure to divide by N*N after the inverse
 
@@ -187,7 +212,6 @@ int main(int argc, char* argv[]) {
 
     // time step loop
     for (int t = 0; t < K; t++) {
-
         step = 1;
         // forward fft (t1)
         cufftExecD2Z(plan_r2c, dev_u, dev_au);
@@ -195,7 +219,7 @@ int main(int argc, char* argv[]) {
     
         // compute derivative
         compute_derivative<<<dim3(gridCX, gridY), dim3(numBlocks, numBlocks)>>>(dev_au, dev_av);
-        
+
         // backward fft (t1)
         cufftExecZ2D(plan_c2r, dev_au, dev_d2u);
         cufftExecZ2D(plan_c2r, dev_av, dev_d2v);
@@ -203,12 +227,32 @@ int main(int argc, char* argv[]) {
         normalize<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_d2u);
         normalize<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_d2v);
 
+        cudaDeviceSynchronize();
+        // write out for debug
+        cudaMemcpy(au, dev_au, COMPLEX_SIZE, cudaMemcpyDeviceToHost);
+        FILE* fid = fopen("da.out","w");
+        fwrite(au, sizeof(cufftDoubleComplex), COMPLEX_SIZE, fid);
+        fclose(fid);
+
+        add_reaction_terms<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_u, dev_v, dev_d2u, dev_d2v);
+
+        // runge-kutta time step (t1)
         runge_kutta_step<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_u, dev_v, dev_d2u, dev_d2v, step);
         step++;
-        
-        // runge-kutta time step (t1)
 
-        // swap pointers
+        cudaDeviceSynchronize();
+        
+        cudaMemcpy(u, dev_u, sizeof(double)*REAL_SIZE, cudaMemcpyDeviceToHost);
+        cudaMemcpy(v, dev_v, sizeof(double)*REAL_SIZE, cudaMemcpyDeviceToHost);
+
+
+        // write out for debug
+        fid = fopen("stage1.out","w");
+        fwrite(u, sizeof(double), N*N, fid);
+        fwrite(v, sizeof(double), N*N, fid);
+        fclose(fid);
+
+
 
         // forward fft (t2)
         // backward fft (t2)
@@ -227,7 +271,19 @@ int main(int argc, char* argv[]) {
         break;
     }
 
+
+    cudaMemcpy(u, dev_u, sizeof(double)*REAL_SIZE, cudaMemcpyDeviceToHost);
+    cudaMemcpy(v, dev_v, sizeof(double)*REAL_SIZE, cudaMemcpyDeviceToHost);
+
+    FILE* fid = fopen("GiererU.out","w");
+    fwrite(u, sizeof(double), N*N, fid);
+    fclose(fid);
+
+    fid = fopen("GiererV.out","w");
+    fwrite(v, sizeof(double), N*N, fid);
+    fclose(fid);
+
     cufftDestroy(plan_r2c); cufftDestroy(plan_c2r);
-    cudaFree(dev_u); cudaFree(dev_v); cudaFree(dev_au); cudaFree(dev_av);
+    cudaFree(dev_u); cudaFree(dev_v); cudaFree(dev_au); cudaFree(dev_av); cudaFree(dev_d2u); cudaFree(dev_d2v);
     return 0;
 }
