@@ -119,8 +119,8 @@ int main(int argc, char* argv[]) {
 
     // parse arguments
     const int N = atoi(argv[1]);
-    const int D_u = atoi(argv[2]);
-    const int D_v = atoi(argv[3]);
+    const double D_u = atof(argv[2]);
+    const double D_v = atof(argv[3]);
     const double a = atof(argv[4]);
     const double b = atof(argv[5]);
     const double c = atof(argv[6]);
@@ -136,8 +136,8 @@ int main(int argc, char* argv[]) {
     }
 
     printf("N: %d\n", N);
-    printf("D_u: %d\n", D_u);
-    printf("D_v: %d\n", D_v);
+    printf("D_u: %.2f\n", D_u);
+    printf("D_v: %.2f\n", D_v);
     printf("a: %.2f\n", a);
     printf("b: %.2f\n", b);
     printf("c: %.2f\n", c);
@@ -169,8 +169,8 @@ int main(int argc, char* argv[]) {
 
     // copy variables to device
     cudaMemcpyToSymbol(dev_dt, &dt, sizeof(double));
-    cudaMemcpyToSymbol(dev_Du, &D_u, sizeof(int));
-    cudaMemcpyToSymbol(dev_Dv, &D_v, sizeof(int));
+    cudaMemcpyToSymbol(dev_Du, &D_u, sizeof(double));
+    cudaMemcpyToSymbol(dev_Dv, &D_v, sizeof(double));
     cudaMemcpyToSymbol(dev_N, &N, sizeof(int));
     cudaMemcpyToSymbol(dev_a, &a, sizeof(double));
     cudaMemcpyToSymbol(dev_b, &b, sizeof(double));
@@ -208,11 +208,8 @@ int main(int argc, char* argv[]) {
     int gridX = (N + numBlocks - 1) / numBlocks;
     int gridY = (N + numBlocks - 1) / numBlocks;
 
-    int step = 1;
-
     // time step loop
     for (int t = 0; t < K; t++) {
-        step = 1;
         // forward fft (t1)
         cufftExecD2Z(plan_r2c, dev_u, dev_au);
         cufftExecD2Z(plan_r2c, dev_v, dev_av);
@@ -229,7 +226,7 @@ int main(int argc, char* argv[]) {
 
         cudaDeviceSynchronize();
         // write out for debug
-        cudaMemcpy(au, dev_au, COMPLEX_SIZE, cudaMemcpyDeviceToHost);
+        cudaMemcpy(au, dev_au, sizeof(cufftDoubleComplex)*COMPLEX_SIZE, cudaMemcpyDeviceToHost);
         FILE* fid = fopen("da.out","w");
         fwrite(au, sizeof(cufftDoubleComplex), COMPLEX_SIZE, fid);
         fclose(fid);
@@ -237,8 +234,7 @@ int main(int argc, char* argv[]) {
         add_reaction_terms<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_u, dev_v, dev_d2u, dev_d2v);
 
         // runge-kutta time step (t1)
-        runge_kutta_step<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_u, dev_v, dev_d2u, dev_d2v, step);
-        step++;
+        runge_kutta_step<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_u, dev_v, dev_d2u, dev_d2v, 4);
 
         cudaDeviceSynchronize();
         
