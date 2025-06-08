@@ -112,7 +112,7 @@ contourf(u,[-1:0.05:1]);
         disp(size(dA));
         maxerr = min([max(abs(d2U-dA),[],'all'),max(abs(d2U-dA/N^2),[],'all')]);
         if maxerr > 1e-11
-            figure(2)
+            figure(2)   
             surf(abs(d2U(1:N/2+1,:)-dA),'LineStyle','none');
             title('spectral Laplacian error');
             fprintf('Check spectral Laplacian derivative\n');
@@ -141,7 +141,7 @@ contourf(u,[-1:0.05:1]);
         fprintf('Skipping spectral derivatives check\n');
     end
     fclose(fid);
-clc
+    
     % compute RK4
     u1 = u + dt/4*(Du*del2A(u)+a+u.^2./v./(1+ep*u.^2)-b*u);
     v1 = v + dt/4*(Dv*del2A(v)+u.^2-c*v);
