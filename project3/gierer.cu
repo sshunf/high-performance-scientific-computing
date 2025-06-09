@@ -16,7 +16,7 @@
 __constant__ int dev_N;
 __constant__ double dev_dt;
 __constant__ double dev_Du;
-__constant__ int dev_Dv;
+__constant__ double dev_Dv;
 __constant__ double dev_a;
 __constant__ double dev_b;
 __constant__ double dev_c;
@@ -32,7 +32,7 @@ __constant__ double dev_eps;
 // #define HandleError(err) (HANDLEERROR(err, __FILE__, __LINE__))
 
 // advances time step 
-__global__ void runge_kutta_step(double* dev_u, double* dev_v, double* dev_d2u, double* dev_d2v, int step) {
+__global__ void runge_kutta_step(double* dev_u_new, double* dev_v_new, double* dev_u, double* dev_v, double* dev_d2u, double* dev_d2v, int step) {
     int i = blockIdx.y * blockDim.y + threadIdx.y;
     int j = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -40,11 +40,8 @@ __global__ void runge_kutta_step(double* dev_u, double* dev_v, double* dev_d2u, 
 
     int idx = i * dev_N + j;
 
-    double old_u = dev_u[idx];
-    double old_v = dev_v[idx];
-
-    dev_u[idx] = old_u + dev_dt / step * dev_d2u[idx];
-    dev_v[idx] = old_v + dev_dt / step * dev_d2v[idx];
+    dev_u_new[idx] = dev_u[idx] + dev_dt / step * dev_d2u[idx];
+    dev_v_new[idx] = dev_v[idx] + dev_dt / step * dev_d2v[idx];
 }
 
 // helper function to rescale matrix after inverse fft
@@ -90,7 +87,7 @@ __global__ void compute_derivative(cufftDoubleComplex* dev_au, cufftDoubleComple
     if (i >= dev_N || j >= dev_N/2 + 1) return;
 
     int kx = (i <= dev_N/2) ? i : i - dev_N;
-    int ky =  j;
+    int ky = j;
 
     double k2 = double(kx*kx + ky*ky);
     double fac = -k2 / double(dev_N * dev_N);
@@ -154,7 +151,8 @@ int main(int argc, char* argv[]) {
     double* u = (double*)malloc(REAL_SIZE*sizeof(double));
     double* v = (double*)malloc(REAL_SIZE*sizeof(double));
 
-    double* au = (double*)malloc(COMPLEX_SIZE*sizeof(cufftDoubleComplex));
+    cufftDoubleComplex* au = (cufftDoubleComplex*)malloc(COMPLEX_SIZE*sizeof(cufftDoubleComplex));
+    cufftDoubleComplex* av = (cufftDoubleComplex*)malloc(COMPLEX_SIZE*sizeof(cufftDoubleComplex));
 
     for (int i = 0; i < N; ++i) {
         for (int j = 0; j < N; ++j) {
@@ -175,11 +173,13 @@ int main(int argc, char* argv[]) {
     cudaMemcpyToSymbol(dev_eps, &eps, sizeof(double));
 
     // initialize matrices on device
-    double *dev_u, *dev_v, *dev_d2u, *dev_d2v;
+    double *dev_u, *dev_v, *dev_d2u, *dev_d2v, *dev_u_new, *dev_v_new;
     cudaMalloc((void**)&dev_u, sizeof(double) * REAL_SIZE);
     cudaMalloc((void**)&dev_v, sizeof(double) * REAL_SIZE);
     cudaMalloc((void**)&dev_d2u, sizeof(double) * REAL_SIZE);
     cudaMalloc((void**)&dev_d2v, sizeof(double) * REAL_SIZE);
+    cudaMalloc((void**)&dev_u_new, sizeof(double) * REAL_SIZE);
+    cudaMalloc((void**)&dev_v_new, sizeof(double) * REAL_SIZE);
 
     cudaMemcpy(dev_u, u, sizeof(double) * REAL_SIZE, cudaMemcpyHostToDevice);
     cudaMemcpy(dev_v, v, sizeof(double) * REAL_SIZE, cudaMemcpyHostToDevice);
@@ -193,8 +193,6 @@ int main(int argc, char* argv[]) {
     cufftPlan2d(&plan_r2c, N, N, CUFFT_D2Z);
     cufftPlan2d(&plan_c2r, N, N, CUFFT_Z2D);
     
-    // cufft does not normalize so make sure to divide by N*N after the inverse
-
     // dim3 blockDim(16, 16); // number of threads per block
     // dim3 gridDim(((N/2 + 1) + blockDim.x - 1) / blockDim.x, (N + blockDim.y - 1) / blockDim.y); // number of blocks (5, 8)
 
@@ -204,6 +202,14 @@ int main(int argc, char* argv[]) {
     int gridY = (N + numBlocks - 1) / numBlocks;
     double normal_factor = 1./(N*N);
 
+    FILE* fid = fopen("GiererU.out","w");
+    fwrite(u, sizeof(double), N*N, fid);
+    fclose(fid);
+
+    fid = fopen("GiererV.out","w");
+    fwrite(v, sizeof(double), N*N, fid);
+    fclose(fid);
+
     // time step loop
     for (int t = 0; t < K; t++) {
         // forward fft (t1)
@@ -212,12 +218,15 @@ int main(int argc, char* argv[]) {
     
         // compute derivative
         compute_derivative<<<dim3(gridCX, gridY), dim3(numBlocks, numBlocks)>>>(dev_au, dev_av);
-
         cudaDeviceSynchronize();
+
         // write out for debug
         cudaMemcpy(au, dev_au, sizeof(cufftDoubleComplex)*COMPLEX_SIZE, cudaMemcpyDeviceToHost);
+        cudaMemcpy(av, dev_av, sizeof(cufftDoubleComplex)*COMPLEX_SIZE, cudaMemcpyDeviceToHost);
+
         FILE* fid = fopen("da.out","w");
         fwrite(au, sizeof(cufftDoubleComplex), COMPLEX_SIZE, fid);
+        fwrite(av, sizeof(cufftDoubleComplex), COMPLEX_SIZE, fid);
         fclose(fid);
 
         // backward fft (t1)
@@ -226,16 +235,14 @@ int main(int argc, char* argv[]) {
 
         rescale<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_d2u, DIFF_COEFF);
         rescale<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_d2v, DIFF_COEFF);
-
         add_reaction_terms<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_u, dev_v, dev_d2u, dev_d2v);
 
         // runge-kutta time step (t1)
-        runge_kutta_step<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_u, dev_v, dev_d2u, dev_d2v, 4);
-
+        runge_kutta_step<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_u_new, dev_v_new, dev_u, dev_v, dev_d2u, dev_d2v, 4);
         cudaDeviceSynchronize();
         
-        cudaMemcpy(u, dev_u, sizeof(double)*REAL_SIZE, cudaMemcpyDeviceToHost);
-        cudaMemcpy(v, dev_v, sizeof(double)*REAL_SIZE, cudaMemcpyDeviceToHost);
+        cudaMemcpy(u, dev_u_new, sizeof(double)*REAL_SIZE, cudaMemcpyDeviceToHost);
+        cudaMemcpy(v, dev_v_new, sizeof(double)*REAL_SIZE, cudaMemcpyDeviceToHost);
 
         // write out for debug
         fid = fopen("stage1.out","w");
@@ -244,10 +251,31 @@ int main(int argc, char* argv[]) {
         fclose(fid);
 
 
-
         // forward fft (t2)
-        // backward fft (t2)
-        // runge-kutta time step (t2)
+        cufftExecD2Z(plan_r2c, dev_u_new, dev_au);
+        cufftExecD2Z(plan_r2c, dev_v_new, dev_av);
+
+        compute_derivative<<<dim3(gridCX, gridY), dim3(numBlocks, numBlocks)>>>(dev_au, dev_av);
+
+        cufftExecZ2D(plan_c2r, dev_au, dev_d2u);
+        cufftExecZ2D(plan_c2r, dev_av, dev_d2v);
+
+        rescale<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_d2u, DIFF_COEFF);
+        rescale<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_d2v, DIFF_COEFF);
+        add_reaction_terms<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_u_new, dev_v_new, dev_d2u, dev_d2v);
+
+        runge_kutta_step<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_u_new, dev_v_new, dev_u, dev_v, dev_d2u, dev_d2v, 3);
+        cudaDeviceSynchronize();
+        
+        cudaMemcpy(u, dev_u_new, sizeof(double)*REAL_SIZE, cudaMemcpyDeviceToHost);
+        cudaMemcpy(v, dev_v_new, sizeof(double)*REAL_SIZE, cudaMemcpyDeviceToHost);
+
+        fid = fopen("stage2.out","w");
+        fwrite(u, sizeof(double), N*N, fid);
+        fwrite(v, sizeof(double), N*N, fid);
+        fclose(fid);
+
+
         // swap pointers
 
         // forward fft (t3)
@@ -266,13 +294,13 @@ int main(int argc, char* argv[]) {
     cudaMemcpy(u, dev_u, sizeof(double)*REAL_SIZE, cudaMemcpyDeviceToHost);
     cudaMemcpy(v, dev_v, sizeof(double)*REAL_SIZE, cudaMemcpyDeviceToHost);
 
-    FILE* fid = fopen("GiererU.out","w");
-    fwrite(u, sizeof(double), N*N, fid);
-    fclose(fid);
+    // FILE* fid = fopen("GiererU.out","w");
+    // fwrite(u, sizeof(double), N*N, fid);
+    // fclose(fid);
 
-    fid = fopen("GiererV.out","w");
-    fwrite(v, sizeof(double), N*N, fid);
-    fclose(fid);
+    // fid = fopen("GiererV.out","w");
+    // fwrite(v, sizeof(double), N*N, fid);
+    // fclose(fid);
 
     cufftDestroy(plan_r2c); cufftDestroy(plan_c2r);
     cudaFree(dev_u); cudaFree(dev_v); cudaFree(dev_au); cudaFree(dev_av); cudaFree(dev_d2u); cudaFree(dev_d2v);
