@@ -211,45 +211,25 @@ int main(int argc, char* argv[]) {
     fclose(fid);
 
     // time step loop
-    for (int t = 0; t < K; t++) {
+    for (int t = 1; t <= K; t++) {
         // forward fft (t1)
         cufftExecD2Z(plan_r2c, dev_u, dev_au);
         cufftExecD2Z(plan_r2c, dev_v, dev_av);
     
         // compute derivative
         compute_derivative<<<dim3(gridCX, gridY), dim3(numBlocks, numBlocks)>>>(dev_au, dev_av);
-        cudaDeviceSynchronize();
-
-        // write out for debug
-        cudaMemcpy(au, dev_au, sizeof(cufftDoubleComplex)*COMPLEX_SIZE, cudaMemcpyDeviceToHost);
-        cudaMemcpy(av, dev_av, sizeof(cufftDoubleComplex)*COMPLEX_SIZE, cudaMemcpyDeviceToHost);
-
-        FILE* fid = fopen("da.out","w");
-        fwrite(au, sizeof(cufftDoubleComplex), COMPLEX_SIZE, fid);
-        fwrite(av, sizeof(cufftDoubleComplex), COMPLEX_SIZE, fid);
-        fclose(fid);
 
         // backward fft (t1)
         cufftExecZ2D(plan_c2r, dev_au, dev_d2u);
         cufftExecZ2D(plan_c2r, dev_av, dev_d2v);
 
-        rescale<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_d2u, DIFF_COEFF);
-        rescale<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_d2v, DIFF_COEFF);
+        rescale<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_d2u, D_u * DIFF_COEFF);
+        rescale<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_d2v, D_v * DIFF_COEFF);
         add_reaction_terms<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_u, dev_v, dev_d2u, dev_d2v);
 
         // runge-kutta time step (t1)
         runge_kutta_step<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_u_new, dev_v_new, dev_u, dev_v, dev_d2u, dev_d2v, 4);
-        cudaDeviceSynchronize();
         
-        cudaMemcpy(u, dev_u_new, sizeof(double)*REAL_SIZE, cudaMemcpyDeviceToHost);
-        cudaMemcpy(v, dev_v_new, sizeof(double)*REAL_SIZE, cudaMemcpyDeviceToHost);
-
-        // write out for debug
-        fid = fopen("stage1.out","w");
-        fwrite(u, sizeof(double), N*N, fid);
-        fwrite(v, sizeof(double), N*N, fid);
-        fclose(fid);
-
         // stage 2 
         cufftExecD2Z(plan_r2c, dev_u_new, dev_au);
         cufftExecD2Z(plan_r2c, dev_v_new, dev_av);
@@ -259,21 +239,12 @@ int main(int argc, char* argv[]) {
         cufftExecZ2D(plan_c2r, dev_au, dev_d2u);
         cufftExecZ2D(plan_c2r, dev_av, dev_d2v);
 
-        rescale<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_d2u, DIFF_COEFF);
-        rescale<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_d2v, DIFF_COEFF);
+        rescale<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_d2u, D_u * DIFF_COEFF);
+        rescale<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_d2v, D_v * DIFF_COEFF);
         add_reaction_terms<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_u_new, dev_v_new, dev_d2u, dev_d2v);
 
         runge_kutta_step<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_u_new, dev_v_new, dev_u, dev_v, dev_d2u, dev_d2v, 3);
-        cudaDeviceSynchronize();
         
-        cudaMemcpy(u, dev_u_new, sizeof(double)*REAL_SIZE, cudaMemcpyDeviceToHost);
-        cudaMemcpy(v, dev_v_new, sizeof(double)*REAL_SIZE, cudaMemcpyDeviceToHost);
-
-        fid = fopen("stage2.out","w");
-        fwrite(u, sizeof(double), N*N, fid);
-        fwrite(v, sizeof(double), N*N, fid);
-        fclose(fid);
-
         // stage 3
         cufftExecD2Z(plan_r2c, dev_u_new, dev_au);
         cufftExecD2Z(plan_r2c, dev_v_new, dev_av);
@@ -283,21 +254,12 @@ int main(int argc, char* argv[]) {
         cufftExecZ2D(plan_c2r, dev_au, dev_d2u);
         cufftExecZ2D(plan_c2r, dev_av, dev_d2v);
 
-        rescale<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_d2u, DIFF_COEFF);
-        rescale<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_d2v, DIFF_COEFF);
+        rescale<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_d2u, D_u * DIFF_COEFF);
+        rescale<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_d2v, D_v * DIFF_COEFF);
         add_reaction_terms<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_u_new, dev_v_new, dev_d2u, dev_d2v);
 
         runge_kutta_step<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_u_new, dev_v_new, dev_u, dev_v, dev_d2u, dev_d2v, 2);
-        cudaDeviceSynchronize();
         
-        cudaMemcpy(u, dev_u_new, sizeof(double)*REAL_SIZE, cudaMemcpyDeviceToHost);
-        cudaMemcpy(v, dev_v_new, sizeof(double)*REAL_SIZE, cudaMemcpyDeviceToHost);
-
-        fid = fopen("stage3.out","w");
-        fwrite(u, sizeof(double), N*N, fid);
-        fwrite(v, sizeof(double), N*N, fid);
-        fclose(fid);
-
         // stage 4
         cufftExecD2Z(plan_r2c, dev_u_new, dev_au);
         cufftExecD2Z(plan_r2c, dev_v_new, dev_av);
@@ -307,36 +269,31 @@ int main(int argc, char* argv[]) {
         cufftExecZ2D(plan_c2r, dev_au, dev_d2u);
         cufftExecZ2D(plan_c2r, dev_av, dev_d2v);
 
-        rescale<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_d2u, DIFF_COEFF);
-        rescale<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_d2v, DIFF_COEFF);
+        rescale<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_d2u, D_u * DIFF_COEFF);
+        rescale<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_d2v, D_v * DIFF_COEFF);
         add_reaction_terms<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_u_new, dev_v_new, dev_d2u, dev_d2v);
 
         runge_kutta_step<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_u_new, dev_v_new, dev_u, dev_v, dev_d2u, dev_d2v, 1);
-        cudaDeviceSynchronize();
-        
-        cudaMemcpy(u, dev_u_new, sizeof(double)*REAL_SIZE, cudaMemcpyDeviceToHost);
-        cudaMemcpy(v, dev_v_new, sizeof(double)*REAL_SIZE, cudaMemcpyDeviceToHost);
 
-        fid = fopen("stage4.out","w");
-        fwrite(u, sizeof(double), N*N, fid);
-        fwrite(v, sizeof(double), N*N, fid);
-        fclose(fid);
+        // Check if we need to output at this time step
+        double current_time = t * dt;
+        if (current_time <= 100.0 && fabs(fmod(current_time, 10.0)) < 1e-10) {
+            cudaDeviceSynchronize();
+            cudaMemcpy(u, dev_u_new, sizeof(double)*REAL_SIZE, cudaMemcpyDeviceToHost);
+            cudaMemcpy(v, dev_v_new, sizeof(double)*REAL_SIZE, cudaMemcpyDeviceToHost);
 
-        break;
+            fid = fopen("GiererU.out","w");
+            fwrite(u, sizeof(double), N*N, fid);
+            fclose(fid);
+
+            fid = fopen("GiererV.out","w");
+            fwrite(v, sizeof(double), N*N, fid);
+            fclose(fid); 
+        }
+
         swap_pointers(dev_u, dev_u_new);
         swap_pointers(dev_v, dev_v_new);
     }
-
-    cudaMemcpy(u, dev_u, sizeof(double)*REAL_SIZE, cudaMemcpyDeviceToHost);
-    cudaMemcpy(v, dev_v, sizeof(double)*REAL_SIZE, cudaMemcpyDeviceToHost);
-
-    // FILE* fid = fopen("GiererU.out","w");
-    // fwrite(u, sizeof(double), N*N, fid);
-    // fclose(fid);
-
-    // fid = fopen("GiererV.out","w");
-    // fwrite(v, sizeof(double), N*N, fid);
-    // fclose(fid);
 
     cufftDestroy(plan_r2c); cufftDestroy(plan_c2r);
     cudaFree(dev_u); cudaFree(dev_v); cudaFree(dev_au); cudaFree(dev_av); cudaFree(dev_d2u); cudaFree(dev_d2v);
