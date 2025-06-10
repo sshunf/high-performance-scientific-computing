@@ -100,11 +100,6 @@ __global__ void compute_derivative(cufftDoubleComplex* dev_au, cufftDoubleComple
     dev_av[idx].y *= fac;
 }
 
-// void fft(cufftHandle plan_r2c, cufftHandle* plan_c2r, double* dev_u, cufftDoubleComplex* dev_au, double* dev_v, cufftDoubleComplex* dev_av) {
-//     cufftExecD2Z(plan_r2c, dev_u, dev_au);
-//     cufftExecD2Z(plan_r2c, dev_v, dev_av);
-// }
-
 // main loop
 int main(int argc, char* argv[]) {
     if (argc < 9) {
@@ -139,6 +134,12 @@ int main(int argc, char* argv[]) {
     printf("K: %d\n", K);
     printf("seed: %ld\n", seed);
 
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+
+    cudaEventRecord(start);
+    
     // set the seed
     srand48(seed);
     double omega;
@@ -229,7 +230,7 @@ int main(int argc, char* argv[]) {
 
         // runge-kutta time step (t1)
         runge_kutta_step<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_u_new, dev_v_new, dev_u, dev_v, dev_d2u, dev_d2v, 4);
-        
+
         // stage 2 
         cufftExecD2Z(plan_r2c, dev_u_new, dev_au);
         cufftExecD2Z(plan_r2c, dev_v_new, dev_av);
@@ -244,7 +245,7 @@ int main(int argc, char* argv[]) {
         add_reaction_terms<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_u_new, dev_v_new, dev_d2u, dev_d2v);
 
         runge_kutta_step<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_u_new, dev_v_new, dev_u, dev_v, dev_d2u, dev_d2v, 3);
-        
+
         // stage 3
         cufftExecD2Z(plan_r2c, dev_u_new, dev_au);
         cufftExecD2Z(plan_r2c, dev_v_new, dev_av);
@@ -259,7 +260,7 @@ int main(int argc, char* argv[]) {
         add_reaction_terms<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_u_new, dev_v_new, dev_d2u, dev_d2v);
 
         runge_kutta_step<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_u_new, dev_v_new, dev_u, dev_v, dev_d2u, dev_d2v, 2);
-        
+
         // stage 4
         cufftExecD2Z(plan_r2c, dev_u_new, dev_au);
         cufftExecD2Z(plan_r2c, dev_v_new, dev_av);
@@ -274,19 +275,17 @@ int main(int argc, char* argv[]) {
         add_reaction_terms<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_u_new, dev_v_new, dev_d2u, dev_d2v);
 
         runge_kutta_step<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_u_new, dev_v_new, dev_u, dev_v, dev_d2u, dev_d2v, 1);
-
-        // Check if we need to output at this time step
-        double current_time = t * dt;
-        if (current_time <= 100.0 && fabs(fmod(current_time, 10.0)) < 1e-10) {
+        
+        if (t % (K/10) == 0) {
             cudaDeviceSynchronize();
             cudaMemcpy(u, dev_u_new, sizeof(double)*REAL_SIZE, cudaMemcpyDeviceToHost);
             cudaMemcpy(v, dev_v_new, sizeof(double)*REAL_SIZE, cudaMemcpyDeviceToHost);
 
-            fid = fopen("GiererU.out","w");
+            fid = fopen("GiererU.out","ab");
             fwrite(u, sizeof(double), N*N, fid);
             fclose(fid);
 
-            fid = fopen("GiererV.out","w");
+            fid = fopen("GiererV.out","ab");
             fwrite(v, sizeof(double), N*N, fid);
             fclose(fid); 
         }
@@ -294,8 +293,19 @@ int main(int argc, char* argv[]) {
         swap_pointers(dev_u, dev_u_new);
         swap_pointers(dev_v, dev_v_new);
     }
+    
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+
+    float ms = 0;
+    cudaEventElapsedTime(&ms, start, stop);
+    float seconds = ms / 1000.0f;
+
+    printf("Time elapsed: %.4f seconds\n", seconds);
 
     cufftDestroy(plan_r2c); cufftDestroy(plan_c2r);
     cudaFree(dev_u); cudaFree(dev_v); cudaFree(dev_au); cudaFree(dev_av); cudaFree(dev_d2u); cudaFree(dev_d2v);
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
     return 0;
 }
