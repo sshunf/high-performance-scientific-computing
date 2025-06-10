@@ -1,485 +1,345 @@
-/*
-ES_APPM 344 - Project 2
-Shun Fujita
-
-Solves the Rock-paper-scissors model problem using ADI + MPI on distributed cluster
-*/
-#define _GNU_SOURCE
-
-#include <stdlib.h>
 #include <stdio.h>
-#include <mpi.h>
-#include <string.h>
+#include <stdlib.h>
+#include <cuda_runtime.h>
+#include <cufft.h>
+#include <math.h>
 
-// function to swap pointers
-#define SWAP(old, new) do { __typeof__(old) tmp = (old); (old) = (new); (new) = tmp; } while (0)
+// useful definitions
+#define NUM_BLOCKS 8
+#define NUM_THREADS_PER_BLOCK 16
+#define REAL_SIZE (N*N)
+#define COMPLEX_SIZE (N*(N/2+1))
+#define PI 3.14159265358979323846
+#define L 200.0
+#define DIFF_COEFF ((2.0 * M_PI / L) * (2.0 * M_PI / L))
 
-// lapack function prototypes
-extern void dgttrf_(int *n, double *dl, double *d, double *du, double *uud, int *pivot, int *info);
-extern void dgttrs_(char *trans, int *n, int *nrhs,
-                    double *dl, double *d, double *du, double *uud,
-                    int *pivot, double *b, int *ldb, int *info);
+__constant__ int dev_N;
+__constant__ double dev_dt;
+__constant__ double dev_Du;
+__constant__ double dev_Dv;
+__constant__ double dev_a;
+__constant__ double dev_b;
+__constant__ double dev_c;
+__constant__ double dev_eps;
 
+// error handler
+// static void HANDLEERROR( cudaError_t err, const char* file, int line) {
+//     if (err != cudaSuccess) {
+//         printf("%s in %s at line %d\n", cudaGetErrorString(err), file,line);
+//         exit(1);
+//     }
+// }
+// #define HandleError(err) (HANDLEERROR(err, __FILE__, __LINE__))
 
-// helper function to transpose matrix
-void transpose_matrix(int Nx, int Ny, double (*matrix)[Ny], double (*t_matrix)[Nx]) {
-    for (int i = 0; i < Nx; i++) {
-        for (int j = 0; j < Ny; j++) {
-            t_matrix[j][i] = matrix[i][j];
-        }
-    }
+// advances time step 
+__global__ void runge_kutta_step(double* dev_u_new, double* dev_v_new, double* dev_u, double* dev_v, double* dev_d2u, double* dev_d2v, int step) {
+    int i = blockIdx.y * blockDim.y + threadIdx.y;
+    int j = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (i >= dev_N || j >= dev_N) return;
+
+    int idx = i * dev_N + j;
+
+    dev_u_new[idx] = dev_u[idx] + dev_dt / step * dev_d2u[idx];
+    dev_v_new[idx] = dev_v[idx] + dev_dt / step * dev_d2v[idx];
 }
 
-// Helper to move square blocks into a row-wise layout for column-major reconstruction
-// N: total number of columns in destination matrix
-void move_blocks(int N, int block_width, int num_blocks, double original[][block_width], double dest[][N]) {
-    for (int b = 0; b < num_blocks; b++) {
-        int offset = b * block_width;
+// helper function to rescale matrix after inverse fft
+__global__ void rescale(double* dev_matrix, double factor) {
+    int i = blockIdx.y * blockDim.y + threadIdx.y;  
+    int j = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= dev_N || j >= dev_N) return;
 
-        for (int i = 0; i < block_width; i++) {
-            for (int j = 0; j < block_width; j++) {
-                dest[i][offset + j] = original[offset + i][j];
-            }
-        }
-    } 
+    int idx = i * dev_N + j;
+    dev_matrix[idx] *= factor;
 }
-	
-int main(int argc, char *argv[]) {
-    double start_time, end_time;
 
-    MPI_Init(&argc, &argv);
-    #ifdef DO_ERROR_CHECKING
-    MPI_Comm_set_errhandler(MPI_COMM_WORLD, MPI_ERRORS_RETURN);
-    #endif
+__global__ void add_reaction_terms(double* dev_u, double* dev_v, double* dev_d2u, double* dev_d2v) {
+    int i = blockIdx.y * blockDim.y + threadIdx.y;
+    int j = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= dev_N || j >= dev_N) return;
 
-    // start timer
-    start_time = MPI_Wtime();
+    int idx = i * dev_N + j;
 
-    // check number of arguments
-    if (argc < 4) {
-        printf("Not enough arguments\n");
-        MPI_Abort(MPI_COMM_WORLD, -1);
+    double u0 = dev_u[idx];
+    double v0 = dev_v[idx];
+
+    // Compute the reaction‐terms
+    double reactionU = dev_a + (u0*u0 / (v0 * (1.0 + dev_eps * u0*u0))) - dev_b * u0; // a + u^2/(v(1+εu^2)) – b u
+    double reactionV = u0*u0 - dev_c * v0; // u^2 – c v
+
+    dev_d2u[idx] += reactionU;
+    dev_d2v[idx] += reactionV; 
+}
+
+// function to swap pointers for runge-kutta step
+inline void swap_pointers(double*& A, double*& B) {
+    double* temp = A;
+    A = B;
+    B = temp;
+}
+
+// consider computing only u instead of both u and v
+__global__ void compute_derivative(cufftDoubleComplex* dev_au, cufftDoubleComplex* dev_av) {
+    int i = blockIdx.y * blockDim.y + threadIdx.y;
+    int j = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (i >= dev_N || j >= dev_N/2 + 1) return;
+
+    int kx = (i <= dev_N/2) ? i : i - dev_N;
+    int ky = j;
+
+    double k2 = double(kx*kx + ky*ky);
+    double fac = -k2 / double(dev_N * dev_N);
+
+    int idx = i * (dev_N/2 + 1) + j;
+
+    dev_au[idx].x *= fac;
+    dev_au[idx].y *= fac;
+    dev_av[idx].x *= fac;
+    dev_av[idx].y *= fac;
+}
+
+// void fft(cufftHandle plan_r2c, cufftHandle* plan_c2r, double* dev_u, cufftDoubleComplex* dev_au, double* dev_v, cufftDoubleComplex* dev_av) {
+//     cufftExecD2Z(plan_r2c, dev_u, dev_au);
+//     cufftExecD2Z(plan_r2c, dev_v, dev_av);
+// }
+
+// main loop
+int main(int argc, char* argv[]) {
+    if (argc < 9) {
+        printf("not enough arguments!\n");
     }
 
     // parse arguments
-    int N = atoi(argv[1]);
-    double alpha = atof(argv[2]);
-    int M = atoi(argv[3]);
+    const int N = atoi(argv[1]);
+    const double D_u = atof(argv[2]);
+    const double D_v = atof(argv[3]);
+    const double a = atof(argv[4]);
+    const double b = atof(argv[5]);
+    const double c = atof(argv[6]);
+    const double eps = atof(argv[7]);
+    const int K = atoi(argv[8]);
+
+    // parse seed
     long seed;
-    if (argc == 5) {
-        seed = atoi(argv[4]);  
+    if (argc >= 10) {
+        seed = atol(argv[9]);
     } else {
-        // generate a seed
-        seed = 42; 
+        seed = 42;
     }
 
-    // initialize dimension [-L, L] x [-L, L] grid
-    int L = 60;
-
-    // initialize step sizes for x, y, t
-    double dx = 2.0*L / (N - 1);
-    double T = 200.0;
-    double dt = T / M;
-    
-    // get the MPI info (number of processes and rank)
-    int world_size, rank;
-    MPI_Comm_size(MPI_COMM_WORLD, &world_size);
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-
-    // seed the rng
-    srand48(seed + rank);
-
-    // print arguments
     printf("N: %d\n", N);
-    printf("alpha: %.2f\n", alpha);
-    printf("M: %d\n", M);
-    printf("seed: %ld\n", seed + rank);
+    printf("D_u: %.2f\n", D_u);
+    printf("D_v: %.2f\n", D_v);
+    printf("a: %.2f\n", a);
+    printf("b: %.2f\n", b);
+    printf("c: %.2f\n", c);
+    printf("eps: %.3f\n", eps);
+    printf("K: %d\n", K);
+    printf("seed: %ld\n", seed);
 
-    // calculate number of rows each process is responsible for
-    int local_N = N / world_size;
+    // set the seed
+    srand48(seed);
+    double omega;
 
-    // initialize old local grid (localN x N)
-    double (*local_U)[N] = malloc(sizeof(*local_U) * local_N);
-    double (*local_V)[N] = malloc(sizeof(*local_V) * local_N);
-    double (*local_W)[N] = malloc(sizeof(*local_W) * local_N);
+    // time steps
+    int T = 100; // terminal time
+    double dt = (double)T / (double)K;
 
-    // initialize new local grid (localN x N)
-    double (*local_U_new)[N] = malloc(sizeof(*local_U) * local_N);
-    double (*local_V_new)[N] = malloc(sizeof(*local_V) * local_N);
-    double (*local_W_new)[N] = malloc(sizeof(*local_W) * local_N);
+    // initialize matrices
+    double* u = (double*)malloc(REAL_SIZE*sizeof(double));
+    double* v = (double*)malloc(REAL_SIZE*sizeof(double));
 
-    // initialize transposed grid
-    double (*local_Ut)[local_N] = malloc(sizeof(*local_Ut) * N);
-    double (*local_Vt)[local_N] = malloc(sizeof(*local_Vt) * N);
-    double (*local_Wt)[local_N] = malloc(sizeof(*local_Wt) * N);
+    cufftDoubleComplex* au = (cufftDoubleComplex*)malloc(COMPLEX_SIZE*sizeof(cufftDoubleComplex));
+    cufftDoubleComplex* av = (cufftDoubleComplex*)malloc(COMPLEX_SIZE*sizeof(cufftDoubleComplex));
 
-    // initialize receiving grids
-    double (*local_Ur)[local_N] = malloc(sizeof(*local_Ur) * N);
-    double (*local_Vr)[local_N] = malloc(sizeof(*local_Vr) * N);
-    double (*local_Wr)[local_N] = malloc(sizeof(*local_Wr) * N);
-
-    // set initial conditions
-    double sigma;
-    double coeff = 1.0 / (1 + alpha); 
-    for (int i = 0; i < local_N; i++) {
-        for (int j = 0; j < N; j++) {
-            sigma = drand48();
-            local_U[i][j] = coeff * sigma;
-
-            sigma = drand48();
-            local_V[i][j] = coeff * sigma;
-
-            sigma = drand48();
-            local_W[i][j] = coeff * sigma;
+    for (int i = 0; i < N; ++i) {
+        for (int j = 0; j < N; ++j) {
+            omega = drand48();
+            u[i*N + j] = (a + c)/b - 4.5*omega;
+            v[i*N + j] = (a + c)*(a + c)/(c * b)/(c * b);
         }
     }
 
-    // initialize subdiagonal, diagonal, and superdiagonal
-    // (I - dt/2 * D_x) and (I - dt/2 * D_y)
-    double* ld = malloc(N*sizeof(double));
-    double* d = malloc(N*sizeof(double));
-    double* ud = malloc(N*sizeof(double));
+    // copy variables to device
+    cudaMemcpyToSymbol(dev_dt, &dt, sizeof(double));
+    cudaMemcpyToSymbol(dev_Du, &D_u, sizeof(double));
+    cudaMemcpyToSymbol(dev_Dv, &D_v, sizeof(double));
+    cudaMemcpyToSymbol(dev_N, &N, sizeof(int));
+    cudaMemcpyToSymbol(dev_a, &a, sizeof(double));
+    cudaMemcpyToSymbol(dev_b, &b, sizeof(double));
+    cudaMemcpyToSymbol(dev_c, &c, sizeof(double));
+    cudaMemcpyToSymbol(dev_eps, &eps, sizeof(double));
+
+    // initialize matrices on device
+    double *dev_u, *dev_v, *dev_d2u, *dev_d2v, *dev_u_new, *dev_v_new;
+    cudaMalloc((void**)&dev_u, sizeof(double) * REAL_SIZE);
+    cudaMalloc((void**)&dev_v, sizeof(double) * REAL_SIZE);
+    cudaMalloc((void**)&dev_d2u, sizeof(double) * REAL_SIZE);
+    cudaMalloc((void**)&dev_d2v, sizeof(double) * REAL_SIZE);
+    cudaMalloc((void**)&dev_u_new, sizeof(double) * REAL_SIZE);
+    cudaMalloc((void**)&dev_v_new, sizeof(double) * REAL_SIZE);
+
+    cudaMemcpy(dev_u, u, sizeof(double) * REAL_SIZE, cudaMemcpyHostToDevice);
+    cudaMemcpy(dev_v, v, sizeof(double) * REAL_SIZE, cudaMemcpyHostToDevice);
+
+    cufftDoubleComplex *dev_au, *dev_av;
+    cudaMalloc((void**)&dev_au, sizeof(cufftDoubleComplex) * COMPLEX_SIZE);
+    cudaMalloc((void**)&dev_av, sizeof(cufftDoubleComplex) * COMPLEX_SIZE);
+
+    // create fft plans
+    cufftHandle plan_r2c, plan_c2r;
+    cufftPlan2d(&plan_r2c, N, N, CUFFT_D2Z);
+    cufftPlan2d(&plan_c2r, N, N, CUFFT_Z2D);
     
-    double dt2 = 0.5 * dt;
-    double lambda = 1.0 / (dx*dx);
+    // dim3 blockDim(16, 16); // number of threads per block
+    // dim3 gridDim(((N/2 + 1) + blockDim.x - 1) / blockDim.x, (N + blockDim.y - 1) / blockDim.y); // number of blocks (5, 8)
 
-    if (rank == 0) {// initilaize the diagonals
-        double a = dt2 * lambda; /* a = (Δt/2)·λ */
-        for (int i = 0; i < N; ++i) {
-            d[i] = 1 + 2.0*a; /* 1 – (-2λ)Δt/2 */
-            if (i < N-1) {
-                ld[i] = -a; /* –λΔt/2 */
-                ud[i] = -a;
-            }
-        }
-        ud[0] *= 2;
-        ld[N-2] *= 2; // boundary conditions
-    }
-    // broadcast of d, ld, ud
-    MPI_Bcast(d, N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-    MPI_Bcast(ld, N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-    MPI_Bcast(ud, N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    int numBlocks = 16;
+    int gridCX = ((N/2 + 1) + numBlocks - 1) / numBlocks;
+    int gridX = (N + numBlocks - 1) / numBlocks;
+    int gridY = (N + numBlocks - 1) / numBlocks;
+    double normal_factor = 1./(N*N);
 
-    // initialize variables for explicit steps
-    double rho_U; double rho_V; double rho_W;
-    double U2; double V2; double W2;
+    FILE* fid = fopen("GiererU.out","w");
+    fwrite(u, sizeof(double), N*N, fid);
+    fclose(fid);
 
-    // initialize parameters for implicit steps
-    double uud[N];
-    int pivot[N];
+    fid = fopen("GiererV.out","w");
+    fwrite(v, sizeof(double), N*N, fid);
+    fclose(fid);
 
-    int block = local_N*local_N;
+    // time step loop
+    for (int t = 0; t < K; t++) {
+        // forward fft (t1)
+        cufftExecD2Z(plan_r2c, dev_u, dev_au);
+        cufftExecD2Z(plan_r2c, dev_v, dev_av);
+    
+        // compute derivative
+        compute_derivative<<<dim3(gridCX, gridY), dim3(numBlocks, numBlocks)>>>(dev_au, dev_av);
+        cudaDeviceSynchronize();
 
-    double diag = -2*lambda;
+        // write out for debug
+        cudaMemcpy(au, dev_au, sizeof(cufftDoubleComplex)*COMPLEX_SIZE, cudaMemcpyDeviceToHost);
+        cudaMemcpy(av, dev_av, sizeof(cufftDoubleComplex)*COMPLEX_SIZE, cudaMemcpyDeviceToHost);
 
-    // initialize 2d grid for gathering
-    double (*U)[N] = NULL;
-    double (*V)[N] = NULL;
-    double (*W)[N] = NULL;
-
-    // intialize rhs pointers for solver
-    double *rhs_list[3] = { &local_U[0][0], &local_V[0][0], &local_W[0][0] };
-
-    // MPI Gather to rank 0 to write initial state to files
-    if (rank == 0) {
-        U = malloc(N*sizeof(*U));
-        V = malloc(N*sizeof(*V));
-        W = malloc(N*sizeof(*W));
-    }
-
-    MPI_Gather(local_U, N*local_N,MPI_DOUBLE, U, N*local_N,MPI_DOUBLE, 0, MPI_COMM_WORLD);
-    MPI_Gather(local_V, N*local_N,MPI_DOUBLE, V, N*local_N,MPI_DOUBLE, 0, MPI_COMM_WORLD);
-    MPI_Gather(local_W, N*local_N,MPI_DOUBLE, W, N*local_N,MPI_DOUBLE, 0, MPI_COMM_WORLD);
-
-    int info;
-
-    // initialize solver parameters
-    char tr = 'N';
-    int nrhs = local_N;
-    int ldb  = N;
-
-    if (rank == 0) {
-        FILE* fid = fopen("A.out","w");
-        fwrite(ld, sizeof(double), N-1, fid);
-        fwrite(d, sizeof(double), N, fid);
-        fwrite(ud, sizeof(double), N-1, fid);
+        FILE* fid = fopen("da.out","w");
+        fwrite(au, sizeof(cufftDoubleComplex), COMPLEX_SIZE, fid);
+        fwrite(av, sizeof(cufftDoubleComplex), COMPLEX_SIZE, fid);
         fclose(fid);
-    }
 
-    dgttrf_(&N, ld, d, ud, uud, pivot, &info);
-    if (info != 0) {
-        fprintf(stderr,"dgttrf failed (info=%d)\n",info);
-        MPI_Abort(MPI_COMM_WORLD,-1);
-    }
+        // backward fft (t1)
+        cufftExecZ2D(plan_c2r, dev_au, dev_d2u);
+        cufftExecZ2D(plan_c2r, dev_av, dev_d2v);
 
-    // for (int i = 0; i < local_N; i++) {
-    //     for (int j = 0; j < N; j++) {
-    //         printf("local_U[%d][%d]: %.3f | ", i, j, local_U[i][j]);
-    //     }
-    //     printf("\n");
-    // }
-    printf("rank %d, line %d, local_u = %e\n", rank, __LINE__, local_U[0][0]);
-    if (rank == 0) {
-        printf("rank %d, line %d, u = %e\n", rank, __LINE__, U[0][0]);
-    }
+        rescale<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_d2u, D_u * DIFF_COEFF);
+        rescale<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_d2v, D_v * DIFF_COEFF);
+        add_reaction_terms<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_u, dev_v, dev_d2u, dev_d2v);
 
-    if (rank == 0) {
-        FILE *f;
-        f=fopen("RPSU.out","w"); fwrite(U, sizeof(double), N*N, f); fclose(f);
-        f=fopen("RPSV.out","w"); fwrite(V, sizeof(double), N*N, f); fclose(f);
-        f=fopen("RPSW.out","w"); fwrite(W, sizeof(double), N*N, f); fclose(f);
-    }
-
-    // start the time step loop
-    for (int t = 1; t <= M; t++) {
-        printf("rank %d, line %d, u = %e\n", rank, __LINE__, local_U[0][0]);
-        MPI_Gather(local_U, N*local_N, MPI_DOUBLE, U, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-        MPI_Gather(local_V, N*local_N, MPI_DOUBLE, V, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-        MPI_Gather(local_W, N*local_N, MPI_DOUBLE, W, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-
-        if (rank == 0) {
-            FILE* fid = fopen("stage0.out","w");
-            fwrite(U, sizeof(double), N*N, fid);
-            fwrite(V, sizeof(double), N*N, fid);
-            fwrite(W, sizeof(double), N*N, fid);
-            fclose(fid);
-        }
-
-        for (int i = 0; i < local_N; i++) {
-            // step 1 - explicit x update for U, V, W
-            for (int j = 0; j < N; j++) {
-                rho_U = local_U[i][j] * (1 - local_U[i][j] - alpha * local_W[i][j]);
-                rho_V = local_V[i][j] * (1 - local_V[i][j] - alpha * local_U[i][j]);
-                rho_W = local_W[i][j] * (1 - local_W[i][j] - alpha * local_V[i][j]);
-
-                if (j == 0) {
-                    U2 = diag * local_U[i][j] + -diag * local_U[i][j+1]; // diag = -2 / (dx*dx); 
-                    V2 = diag * local_V[i][j] + -diag * local_V[i][j+1];
-                    W2 = diag * local_W[i][j] + -diag * local_W[i][j+1];
-                } else if (j == N-1) {
-                    U2 = -diag * local_U[i][j-1] + diag * local_U[i][j];
-                    V2 = -diag * local_V[i][j-1] + diag * local_V[i][j];
-                    W2 = -diag * local_W[i][j-1] + diag * local_W[i][j];
-                } else {
-                    U2 = lambda * local_U[i][j-1] + diag * local_U[i][j] + lambda * local_U[i][j+1]; // lambda = 1 / (dx*dx);
-                    V2 = lambda * local_V[i][j-1] + diag * local_V[i][j] + lambda * local_V[i][j+1];
-                    W2 = lambda * local_W[i][j-1] + diag * local_W[i][j] + lambda * local_W[i][j+1];
-                }
-                
-                local_U_new[i][j] = local_U[i][j] + dt2 * (U2 + rho_U);
-                local_V_new[i][j] = local_V[i][j] + dt2 * (V2 + rho_V);
-                local_W_new[i][j] = local_W[i][j] + dt2 * (W2 + rho_W);
-            }
-        }
-
-        printf("rank %d, line %d, u = %e\n", rank, __LINE__, local_U[0][0]);
-        MPI_Gather(local_U_new, N*local_N, MPI_DOUBLE, U, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-        MPI_Gather(local_V_new, N*local_N, MPI_DOUBLE, V, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-        MPI_Gather(local_W_new, N*local_N, MPI_DOUBLE, W, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-
-        // if (rank == 0) {
-        //     for (int i = 0; i < N; i++) {
-        //         for (int j = 0; j < N; j++) {
-        //             printf("U[%d][%d]: %.3f | ", i, j, U[i][j]);
-        //         }
-        //         printf("\n");
-        //     }
-        // }
-
-        if (rank == 0) {
-            FILE* fid = fopen("stage1.out","w");
-            fwrite(U, sizeof(double), N*N, fid);
-            fwrite(V, sizeof(double), N*N, fid);
-            fwrite(W, sizeof(double), N*N, fid);
-            fclose(fid);
-        }
-
-        // swap old and new pointers
-        SWAP(local_U,  local_U_new);
-        SWAP(local_V,  local_V_new);
-        SWAP(local_W,  local_W_new);
-
-        // tranpose array
-        transpose_matrix(local_N, N, local_U, local_Ut);
-        transpose_matrix(local_N, N, local_V, local_Vt);
-        transpose_matrix(local_N, N, local_W, local_Wt);
-
-        MPI_Alltoall(&local_Ut[0][0], block, MPI_DOUBLE, &local_Ur[0][0], block, MPI_DOUBLE, MPI_COMM_WORLD);
-        MPI_Alltoall(&local_Vt[0][0], block, MPI_DOUBLE, &local_Vr[0][0], block, MPI_DOUBLE, MPI_COMM_WORLD);
-        MPI_Alltoall(&local_Wt[0][0], block, MPI_DOUBLE, &local_Wr[0][0], block, MPI_DOUBLE, MPI_COMM_WORLD);
-
-        move_blocks(N, local_N, world_size, local_Ur, local_U);
-        move_blocks(N, local_N, world_size, local_Vr, local_V);
-        move_blocks(N, local_N, world_size, local_Wr, local_W);
-
-        rhs_list[0] = &local_U[0][0];
-        rhs_list[1] = &local_V[0][0];
-        rhs_list[2] = &local_W[0][0];
-
-        // step 2 - implicit y update
-        for (int s=0; s<3; ++s) {
-            dgttrs_(&tr, &N, &nrhs, ld, d, ud, uud, pivot, rhs_list[s], &ldb, &info);
-            if (info != 0) {
-                fprintf(stderr,"dgttrs failed (species %d, info=%d)\n",s,info);
-                MPI_Abort(MPI_COMM_WORLD,-1);
-            }
-        }
-
-        MPI_Gather(local_U, N*local_N, MPI_DOUBLE, U, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-        MPI_Gather(local_V, N*local_N, MPI_DOUBLE, V, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-        MPI_Gather(local_W, N*local_N, MPI_DOUBLE, W, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-
-        if (rank == 0) {
-            FILE* fid = fopen("stage2.out","w");
-            fwrite(U, sizeof(double), N*N, fid);
-            fwrite(V, sizeof(double), N*N, fid);
-            fwrite(W, sizeof(double), N*N, fid);
-            fclose(fid);
-        }
-
-        // step 3 - explicit y update
-        for (int i = 0; i < local_N; i++) {
-            for (int j = 0; j < N; j++) {
-                rho_U = local_U[i][j] * (1 - local_U[i][j] - alpha * local_W[i][j]);
-                rho_V = local_V[i][j] * (1 - local_V[i][j] - alpha * local_U[i][j]);
-                rho_W = local_W[i][j] * (1 - local_W[i][j] - alpha * local_V[i][j]);
-                if (j == 0) {
-                    U2 = diag * local_U[i][j] + -diag * local_U[i][j+1];
-                    V2 = diag * local_V[i][j] + -diag * local_V[i][j+1];
-                    W2 = diag * local_W[i][j] + -diag * local_W[i][j+1];
-                } else if (j == N-1) {
-                    U2 = -diag * local_U[i][j-1] + diag * local_U[i][j];
-                    V2 = -diag * local_V[i][j-1] + diag * local_V[i][j];
-                    W2 = -diag * local_W[i][j-1] + diag * local_W[i][j];
-                } else {
-                    U2 = lambda * local_U[i][j-1] + diag * local_U[i][j] + lambda * local_U[i][j+1];
-                    V2 = lambda * local_V[i][j-1] + diag * local_V[i][j] + lambda * local_V[i][j+1];
-                    W2 = lambda * local_W[i][j-1] + diag * local_W[i][j] + lambda * local_W[i][j+1];
-                }
-                
-                local_U_new[i][j] = local_U[i][j] + dt2 * (U2 + rho_U);
-                local_V_new[i][j] = local_V[i][j] + dt2 * (V2 + rho_V);
-                local_W_new[i][j] = local_W[i][j] + dt2 * (W2 + rho_W);
-            }
-        }
-
-        MPI_Gather(local_U_new, N*local_N, MPI_DOUBLE, U, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-        MPI_Gather(local_V_new, N*local_N, MPI_DOUBLE, V, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-        MPI_Gather(local_W_new, N*local_N, MPI_DOUBLE, W, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-
-        if (rank == 0) {
-            FILE* fid = fopen("stage3.out","w");
-            fwrite(U, sizeof(double), N*N, fid);
-            fwrite(V, sizeof(double), N*N, fid);
-            fwrite(W, sizeof(double), N*N, fid);
-            fclose(fid);
-        }
-
-        // swap old and new pointers
-        SWAP(local_U,  local_U_new);
-        SWAP(local_V,  local_V_new);
-        SWAP(local_W,  local_W_new);
-
-        // transpose array + MPI scatter
-        transpose_matrix(local_N, N, local_U, local_Ut);
-        transpose_matrix(local_N, N, local_V, local_Vt);
-        transpose_matrix(local_N, N, local_W, local_Wt);
-
-        MPI_Alltoall(&local_Ut[0][0], block, MPI_DOUBLE, &local_Ur[0][0], block, MPI_DOUBLE, MPI_COMM_WORLD);
-        MPI_Alltoall(&local_Vt[0][0], block, MPI_DOUBLE, &local_Vr[0][0], block, MPI_DOUBLE, MPI_COMM_WORLD);
-        MPI_Alltoall(&local_Wt[0][0], block, MPI_DOUBLE, &local_Wr[0][0], block, MPI_DOUBLE, MPI_COMM_WORLD);
-    
-        move_blocks(N, local_N, world_size, local_Ur, local_U);
-        move_blocks(N, local_N, world_size, local_Vr, local_V);
-        move_blocks(N, local_N, world_size, local_Wr, local_W);
-
-        rhs_list[0] = &local_U[0][0];
-        rhs_list[1] = &local_V[0][0];
-        rhs_list[2] = &local_W[0][0];
-
-        // step 4 implicit x update (using lapack)
-        for (int s=0; s<3; ++s) {
-            dgttrs_(&tr, &N, &nrhs, ld, d, ud, uud, pivot, rhs_list[s], &ldb, &info);
-            if (info != 0) {
-                fprintf(stderr,"dgttrs failed (species %d, info=%d)\n",s,info);
-                MPI_Abort(MPI_COMM_WORLD,-1);
-            }
-        }
-
-        // gather to write to files
-        MPI_Gather(local_U, N*local_N, MPI_DOUBLE, U, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-        MPI_Gather(local_V, N*local_N, MPI_DOUBLE, V, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-        MPI_Gather(local_W, N*local_N, MPI_DOUBLE, W, N*local_N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-
-        if (rank == 0) {
-            FILE* fid = fopen("stage4.out","w");
-            fwrite(U, sizeof(double), N*N, fid);
-            fwrite(V, sizeof(double), N*N, fid);
-            fwrite(W, sizeof(double), N*N, fid);
-            fclose(fid);
-        }
-
-        MPI_Finalize();
-        return 0;
-
-        if (rank == 0 && (t % (M / 10)) == 0) {
-            FILE *fU = fopen("RPSU.out", "ab");
-            fwrite(U, sizeof(double), N * N, fU);
-            fclose(fU);
+        // runge-kutta time step (t1)
+        runge_kutta_step<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_u_new, dev_v_new, dev_u, dev_v, dev_d2u, dev_d2v, 4);
+        cudaDeviceSynchronize();
         
-            FILE *fV = fopen("RPSV.out", "ab");
-            fwrite(V, sizeof(double), N * N, fV);
-            fclose(fV);
+        cudaMemcpy(u, dev_u_new, sizeof(double)*REAL_SIZE, cudaMemcpyDeviceToHost);
+        cudaMemcpy(v, dev_v_new, sizeof(double)*REAL_SIZE, cudaMemcpyDeviceToHost);
+
+        // write out for debug
+        fid = fopen("stage1.out","w");
+        fwrite(u, sizeof(double), N*N, fid);
+        fwrite(v, sizeof(double), N*N, fid);
+        fclose(fid);
+
+        // stage 2 
+        cufftExecD2Z(plan_r2c, dev_u_new, dev_au);
+        cufftExecD2Z(plan_r2c, dev_v_new, dev_av);
+
+        compute_derivative<<<dim3(gridCX, gridY), dim3(numBlocks, numBlocks)>>>(dev_au, dev_av);
+
+        cufftExecZ2D(plan_c2r, dev_au, dev_d2u);
+        cufftExecZ2D(plan_c2r, dev_av, dev_d2v);
+
+        rescale<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_d2u, D_u * DIFF_COEFF);
+        rescale<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_d2v, D_v * DIFF_COEFF);
+        add_reaction_terms<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_u_new, dev_v_new, dev_d2u, dev_d2v);
+
+        runge_kutta_step<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_u_new, dev_v_new, dev_u, dev_v, dev_d2u, dev_d2v, 3);
+        cudaDeviceSynchronize();
         
-            FILE *fW = fopen("RPSW.out", "ab");
-            fwrite(W, sizeof(double), N * N, fW);
-            fclose(fW);
-        }
+        cudaMemcpy(u, dev_u_new, sizeof(double)*REAL_SIZE, cudaMemcpyDeviceToHost);
+        cudaMemcpy(v, dev_v_new, sizeof(double)*REAL_SIZE, cudaMemcpyDeviceToHost);
+
+        fid = fopen("stage2.out","w");
+        fwrite(u, sizeof(double), N*N, fid);
+        fwrite(v, sizeof(double), N*N, fid);
+        fclose(fid);
+
+        // stage 3
+        cufftExecD2Z(plan_r2c, dev_u_new, dev_au);
+        cufftExecD2Z(plan_r2c, dev_v_new, dev_av);
+
+        compute_derivative<<<dim3(gridCX, gridY), dim3(numBlocks, numBlocks)>>>(dev_au, dev_av);
+
+        cufftExecZ2D(plan_c2r, dev_au, dev_d2u);
+        cufftExecZ2D(plan_c2r, dev_av, dev_d2v);
+
+        rescale<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_d2u, D_u * DIFF_COEFF);
+        rescale<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_d2v, D_v * DIFF_COEFF);
+        add_reaction_terms<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_u_new, dev_v_new, dev_d2u, dev_d2v);
+
+        runge_kutta_step<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_u_new, dev_v_new, dev_u, dev_v, dev_d2u, dev_d2v, 2);
+        cudaDeviceSynchronize();
+        
+        cudaMemcpy(u, dev_u_new, sizeof(double)*REAL_SIZE, cudaMemcpyDeviceToHost);
+        cudaMemcpy(v, dev_v_new, sizeof(double)*REAL_SIZE, cudaMemcpyDeviceToHost);
+
+        fid = fopen("stage3.out","w");
+        fwrite(u, sizeof(double), N*N, fid);
+        fwrite(v, sizeof(double), N*N, fid);
+        fclose(fid);
+
+        // stage 4
+        cufftExecD2Z(plan_r2c, dev_u_new, dev_au);
+        cufftExecD2Z(plan_r2c, dev_v_new, dev_av);
+
+        compute_derivative<<<dim3(gridCX, gridY), dim3(numBlocks, numBlocks)>>>(dev_au, dev_av);
+
+        cufftExecZ2D(plan_c2r, dev_au, dev_d2u);
+        cufftExecZ2D(plan_c2r, dev_av, dev_d2v);
+
+        rescale<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_d2u, D_u * DIFF_COEFF);
+        rescale<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_d2v, D_v * DIFF_COEFF);
+        add_reaction_terms<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_u_new, dev_v_new, dev_d2u, dev_d2v);
+
+        runge_kutta_step<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_u_new, dev_v_new, dev_u, dev_v, dev_d2u, dev_d2v, 1);
+        cudaDeviceSynchronize();
+        
+        cudaMemcpy(u, dev_u_new, sizeof(double)*REAL_SIZE, cudaMemcpyDeviceToHost);
+        cudaMemcpy(v, dev_v_new, sizeof(double)*REAL_SIZE, cudaMemcpyDeviceToHost);
+
+        fid = fopen("stage4.out","w");
+        fwrite(u, sizeof(double), N*N, fid);
+        fwrite(v, sizeof(double), N*N, fid);
+        fclose(fid);
+
+
+        break;
+        swap_pointers(dev_u, dev_u_new);
+        swap_pointers(dev_v, dev_v_new);
     }
-    
-    // record time elapsed
-    end_time = MPI_Wtime();
 
-    if (rank == 0) {
-        double elapsed_time = end_time - start_time;
-    
-        printf("Elapsed time: %f seconds\n", elapsed_time);
-    
-        FILE *f = fopen("times.txt", "a");
-        if (f == NULL) {
-            fprintf(stderr, "Error opening file times.txt\n");
-            MPI_Abort(MPI_COMM_WORLD, 1);
-        }
-    
-        // <num_processes> <elapsed_time>
-        fprintf(f, "num proc: %d | time: %f | N: %d\n", world_size, elapsed_time, N);
-    
-        fclose(f);
-    }
+    cudaMemcpy(u, dev_u, sizeof(double)*REAL_SIZE, cudaMemcpyDeviceToHost);
+    cudaMemcpy(v, dev_v, sizeof(double)*REAL_SIZE, cudaMemcpyDeviceToHost);
 
-    // free memory
-    free(local_U);
-    free(local_V);
-    free(local_W);
-    free(local_U_new);
-    free(local_V_new);
-    free(local_W_new);
-    free(local_Ut);
-    free(local_Vt);
-    free(local_Wt);
-    free(local_Ur);
-    free(local_Vr);
-    free(local_Wr);
-    free(ld);
-    free(d);
-    free(ud);
+    // FILE* fid = fopen("GiererU.out","w");
+    // fwrite(u, sizeof(double), N*N, fid);
+    // fclose(fid);
 
-    if (rank == 0) {
-        free(U);
-        free(V);
-        free(W);
-    }
+    // fid = fopen("GiererV.out","w");
+    // fwrite(v, sizeof(double), N*N, fid);
+    // fclose(fid);
 
-    MPI_Finalize();
+    cufftDestroy(plan_r2c); cufftDestroy(plan_c2r);
+    cudaFree(dev_u); cudaFree(dev_v); cudaFree(dev_au); cudaFree(dev_av); cudaFree(dev_d2u); cudaFree(dev_d2v);
     return 0;
 }

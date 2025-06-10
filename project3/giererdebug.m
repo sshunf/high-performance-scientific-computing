@@ -208,7 +208,7 @@ contourf(u,[-1:0.05:1]);
             subplot(1,2,2)
             surf(V-v2,'LineStyle','none');
             title('stage 2 error for V')
-            fprintf('Check stage 1\n');
+            fprintf('Check stage 2\n');
             return 
         else
             fprintf('Stage 2 looks good\n');
@@ -242,7 +242,7 @@ contourf(u,[-1:0.05:1]);
             subplot(1,2,2)
             surf(V-v1,'LineStyle','none');
             title('stage 3 error for V')
-            fprintf('Check stage 1\n');
+            fprintf('Check stage 3\n');
             return 
         else
             fprintf('Stage 3 looks good\n');

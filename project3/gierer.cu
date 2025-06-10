@@ -73,11 +73,11 @@ __global__ void add_reaction_terms(double* dev_u, double* dev_v, double* dev_d2u
 }
 
 // function to swap pointers for runge-kutta step
-// inline void swap(double*& A, double*& B) {
-//     double* temp = A;
-//     A = B;
-//     B = temp;
-// }
+inline void swap_pointers(double*& A, double*& B) {
+    double* temp = A;
+    A = B;
+    B = temp;
+}
 
 // consider computing only u instead of both u and v
 __global__ void compute_derivative(cufftDoubleComplex* dev_au, cufftDoubleComplex* dev_av) {
@@ -250,8 +250,7 @@ int main(int argc, char* argv[]) {
         fwrite(v, sizeof(double), N*N, fid);
         fclose(fid);
 
-
-        // forward fft (t2)
+        // stage 2 
         cufftExecD2Z(plan_r2c, dev_u_new, dev_au);
         cufftExecD2Z(plan_r2c, dev_v_new, dev_av);
 
@@ -275,21 +274,58 @@ int main(int argc, char* argv[]) {
         fwrite(v, sizeof(double), N*N, fid);
         fclose(fid);
 
+        // stage 3
+        cufftExecD2Z(plan_r2c, dev_u_new, dev_au);
+        cufftExecD2Z(plan_r2c, dev_v_new, dev_av);
 
-        // swap pointers
+        compute_derivative<<<dim3(gridCX, gridY), dim3(numBlocks, numBlocks)>>>(dev_au, dev_av);
 
-        // forward fft (t3)
-        // backward fft (t3)
-        // runge-kutta time step (t3)
-        // swap pointers
+        cufftExecZ2D(plan_c2r, dev_au, dev_d2u);
+        cufftExecZ2D(plan_c2r, dev_av, dev_d2v);
 
-        // forward fft (t4)
-        // backward fft (t4)
-        // runge-kutta time step (t4)
-        // swap pointers
+        rescale<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_d2u, DIFF_COEFF);
+        rescale<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_d2v, DIFF_COEFF);
+        add_reaction_terms<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_u_new, dev_v_new, dev_d2u, dev_d2v);
+
+        runge_kutta_step<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_u_new, dev_v_new, dev_u, dev_v, dev_d2u, dev_d2v, 2);
+        cudaDeviceSynchronize();
+        
+        cudaMemcpy(u, dev_u_new, sizeof(double)*REAL_SIZE, cudaMemcpyDeviceToHost);
+        cudaMemcpy(v, dev_v_new, sizeof(double)*REAL_SIZE, cudaMemcpyDeviceToHost);
+
+        fid = fopen("stage3.out","w");
+        fwrite(u, sizeof(double), N*N, fid);
+        fwrite(v, sizeof(double), N*N, fid);
+        fclose(fid);
+
+        // stage 4
+        cufftExecD2Z(plan_r2c, dev_u_new, dev_au);
+        cufftExecD2Z(plan_r2c, dev_v_new, dev_av);
+
+        compute_derivative<<<dim3(gridCX, gridY), dim3(numBlocks, numBlocks)>>>(dev_au, dev_av);
+
+        cufftExecZ2D(plan_c2r, dev_au, dev_d2u);
+        cufftExecZ2D(plan_c2r, dev_av, dev_d2v);
+
+        rescale<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_d2u, DIFF_COEFF);
+        rescale<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_d2v, DIFF_COEFF);
+        add_reaction_terms<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_u_new, dev_v_new, dev_d2u, dev_d2v);
+
+        runge_kutta_step<<<dim3(gridX, gridY), dim3(numBlocks, numBlocks)>>>(dev_u_new, dev_v_new, dev_u, dev_v, dev_d2u, dev_d2v, 1);
+        cudaDeviceSynchronize();
+        
+        cudaMemcpy(u, dev_u_new, sizeof(double)*REAL_SIZE, cudaMemcpyDeviceToHost);
+        cudaMemcpy(v, dev_v_new, sizeof(double)*REAL_SIZE, cudaMemcpyDeviceToHost);
+
+        fid = fopen("stage4.out","w");
+        fwrite(u, sizeof(double), N*N, fid);
+        fwrite(v, sizeof(double), N*N, fid);
+        fclose(fid);
+
         break;
+        swap_pointers(dev_u, dev_u_new);
+        swap_pointers(dev_v, dev_v_new);
     }
-
 
     cudaMemcpy(u, dev_u, sizeof(double)*REAL_SIZE, cudaMemcpyDeviceToHost);
     cudaMemcpy(v, dev_v, sizeof(double)*REAL_SIZE, cudaMemcpyDeviceToHost);
