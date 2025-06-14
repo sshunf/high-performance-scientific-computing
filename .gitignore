@@ -2,3 +2,4 @@
 stokes
 rps
 *.out
+.venv
